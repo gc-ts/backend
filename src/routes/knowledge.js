@@ -1,63 +1,38 @@
 import express from 'express';
-import { getAllKnowledge, searchKnowledge } from '../services/knowledge.js';
+import {
+  getAllKnowledge,
+  searchKnowledge,
+  ingestStartupDocuments
+} from '../services/knowledge.js';
+import * as store from '../services/vectorStore.js';
 
 const router = express.Router();
 
 /**
  * GET /api/knowledge
- * Получение всей базы знаний
- *
- * Response:
- * {
- *   "knowledge": {
- *     "vacation": {...},
- *     "salary": {...},
- *     ...
- *   }
- * }
+ * Возвращает статичный «быстрый» справочник + статистику RAG-индекса.
  */
-router.get('/', async (req, res) => {
+router.get('/', async (_req, res) => {
   try {
     const knowledge = getAllKnowledge();
-    res.json({ knowledge });
-
+    const stats = store.getStats();
+    const documents = store.listDocuments();
+    res.json({ knowledge, rag: { ...stats, documents } });
   } catch (error) {
-    console.error('Knowledge error:', error);
-    res.status(500).json({
-      error: 'Failed to get knowledge base',
-      message: error.message
-    });
+    res.status(500).json({ error: 'Failed to get knowledge base', message: error.message });
   }
 });
 
 /**
  * POST /api/knowledge/search
- * Поиск в базе знаний
- *
- * Body:
- * {
- *   "query": "отпуск"
- * }
- *
- * Response:
- * {
- *   "result": {
- *     "title": "Отпуска",
- *     "content": "...",
- *     "source": "..."
- *   }
- * }
+ * Body: { query, topK?, minScore? }
  */
 router.post('/search', async (req, res) => {
   try {
-    const { query } = req.body;
+    const { query, topK, minScore } = req.body;
+    if (!query) return res.status(400).json({ error: 'Query is required' });
 
-    if (!query) {
-      return res.status(400).json({ error: 'Query is required' });
-    }
-
-    const result = searchKnowledge(query);
-
+    const result = await searchKnowledge(query);
     if (!result) {
       return res.status(404).json({
         error: 'No relevant information found',
@@ -65,15 +40,36 @@ router.post('/search', async (req, res) => {
       });
     }
 
-    res.json({ result });
-
+    // Дополнительно — сырые векторные хиты, если запрошены параметры
+    let raw = result.hits;
+    if (topK || minScore) {
+      raw = await store.search(query, { topK, minScore });
+    }
+    res.json({ result, hits: raw });
   } catch (error) {
-    console.error('Search error:', error);
-    res.status(500).json({
-      error: 'Failed to search knowledge base',
-      message: error.message
-    });
+    res.status(500).json({ error: 'Failed to search knowledge base', message: error.message });
   }
+});
+
+/**
+ * POST /api/knowledge/reindex
+ * Принудительная переиндексация папки RAG_DOCS_DIR.
+ */
+router.post('/reindex', async (_req, res) => {
+  try {
+    const result = await ingestStartupDocuments();
+    res.json({ message: 'Reindex done', ...result, total: store.getStats().total });
+  } catch (error) {
+    res.status(500).json({ error: 'Reindex failed', message: error.message });
+  }
+});
+
+/**
+ * GET /api/knowledge/index
+ * Состояние векторного индекса.
+ */
+router.get('/index', (_req, res) => {
+  res.json({ stats: store.getStats(), documents: store.listDocuments() });
 });
 
 export default router;

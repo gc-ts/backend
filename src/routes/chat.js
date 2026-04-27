@@ -1,106 +1,179 @@
 import express from 'express';
-import { generateResponse } from '../services/ollama.js';
+import { generateResponse, streamResponse } from '../services/ollama.js';
 import { searchKnowledge } from '../services/knowledge.js';
+import { findEmployee } from '../services/employee.js';
+import { query } from '../config/database.js';
 
 const router = express.Router();
 
+const HR_FALLBACK_HINT =
+  '\n\nЕсли вам нужна точная информация — напишите в отдел кадров: hr@company.ru, +7 (495) 123-45-67.';
+
+async function getEmployeeContext(employeeId) {
+  if (!employeeId) return null;
+  try {
+    return await findEmployee({ employeeId });
+  } catch {
+    return null;
+  }
+}
+
+async function getRecentHistory(employeeId, limit = 6) {
+  if (!employeeId) return [];
+  try {
+    const res = await query(
+      `SELECT role, content FROM chat_messages
+       WHERE employee_id = (SELECT id FROM employees WHERE employee_id = $1)
+       ORDER BY created_at DESC LIMIT $2`,
+      [employeeId, limit]
+    );
+    return res.rows.reverse().map((r) => ({ role: r.role, content: r.content }));
+  } catch {
+    return [];
+  }
+}
+
+async function persistMessage(employeeId, role, content) {
+  if (!employeeId) return;
+  try {
+    await query(
+      `INSERT INTO chat_messages (employee_id, role, content)
+       SELECT id, $2, $3 FROM employees WHERE employee_id = $1`,
+      [employeeId, role, content]
+    );
+  } catch {
+    // БД может быть недоступна
+  }
+}
+
 /**
  * POST /api/chat/message
- * Отправка сообщения в чат
- *
- * Body:
- * {
- *   "message": "Как оформить отпуск?",
- *   "employeeId": "12345" (optional)
- * }
- *
- * Response:
- * {
- *   "response": "Ответ от AI",
- *   "source": "Источник информации",
- *   "timestamp": "2026-04-27T10:03:18.200Z"
- * }
+ * Body: { message, employeeId? }
+ * Response: { response, source, hits, timestamp }
  */
 router.post('/message', async (req, res) => {
   try {
     const { message, employeeId } = req.body;
+    if (!message) return res.status(400).json({ error: 'Message is required' });
 
-    if (!message) {
-      return res.status(400).json({ error: 'Message is required' });
-    }
+    const [employee, history, knowledge] = await Promise.all([
+      getEmployeeContext(employeeId),
+      getRecentHistory(employeeId),
+      searchKnowledge(message)
+    ]);
 
-    // Поиск контекста в базе знаний
-    const knowledge = searchKnowledge(message);
+    const context = knowledge?.content || '';
+    const source = knowledge?.source || null;
+    const hits = knowledge?.hits || [];
 
-    let response;
-    let source = null;
+    let answer = await generateResponse(message, context, employee, history);
+    if (!knowledge) answer += HR_FALLBACK_HINT;
 
-    if (knowledge) {
-      // Генерация ответа с контекстом
-      response = await generateResponse(message, knowledge.content);
-      source = knowledge.source;
-    } else {
-      // Ответ без контекста
-      response = await generateResponse(
-        message,
-        'Информация по данному вопросу отсутствует в базе знаний.'
-      );
-      response += '\n\nК сожалению, я не нашел информацию по вашему вопросу. Пожалуйста, обратитесь в отдел кадров: hr@company.ru или по телефону +7 (495) 123-45-67';
-    }
+    // Async persist (fire-and-forget)
+    persistMessage(employeeId, 'user', message);
+    persistMessage(employeeId, 'assistant', answer);
 
     res.json({
-      response,
+      response: answer,
       source,
+      hits: hits.map((h) => ({ score: h.score, doc: h.docTitle, section: h.section })),
       timestamp: new Date().toISOString()
     });
-
   } catch (error) {
     console.error('Chat error:', error);
-    res.status(500).json({
-      error: 'Failed to process message',
-      message: error.message
+    res.status(500).json({ error: 'Failed to process message', message: error.message });
+  }
+});
+
+/**
+ * POST /api/chat/stream
+ * Server-Sent Events. Body: { message, employeeId? }
+ * Stream: { type: 'context', source, hits } | { type: 'token', delta } | { type: 'done' }
+ */
+router.post('/stream', async (req, res) => {
+  const { message, employeeId } = req.body;
+  if (!message) return res.status(400).json({ error: 'Message is required' });
+
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache, no-transform');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no');
+  res.flushHeaders?.();
+
+  const send = (obj) => res.write(`data: ${JSON.stringify(obj)}\n\n`);
+
+  try {
+    const [employee, history, knowledge] = await Promise.all([
+      getEmployeeContext(employeeId),
+      getRecentHistory(employeeId),
+      searchKnowledge(message)
+    ]);
+
+    send({
+      type: 'context',
+      source: knowledge?.source || null,
+      hits: (knowledge?.hits || []).map((h) => ({
+        score: h.score,
+        doc: h.docTitle,
+        section: h.section
+      }))
     });
+
+    let full = '';
+    for await (const delta of streamResponse(
+      message,
+      knowledge?.content || '',
+      employee,
+      history
+    )) {
+      full += delta;
+      send({ type: 'token', delta });
+    }
+
+    if (!knowledge) {
+      full += HR_FALLBACK_HINT;
+      send({ type: 'token', delta: HR_FALLBACK_HINT });
+    }
+
+    persistMessage(employeeId, 'user', message);
+    persistMessage(employeeId, 'assistant', full);
+
+    send({ type: 'done' });
+    res.end();
+  } catch (error) {
+    console.error('Stream error:', error);
+    send({ type: 'error', error: error.message });
+    res.end();
   }
 });
 
 /**
  * GET /api/chat/history/:employeeId
- * Получение истории чата сотрудника (заглушка)
- *
- * Response:
- * {
- *   "history": [
- *     {
- *       "id": "1",
- *       "message": "Вопрос",
- *       "response": "Ответ",
- *       "timestamp": "2026-04-27T10:03:18.200Z"
- *     }
- *   ]
- * }
  */
 router.get('/history/:employeeId', async (req, res) => {
   try {
     const { employeeId } = req.params;
-
-    // Заглушка - в продакшене здесь будет запрос к БД
-    res.json({
-      history: [
-        {
-          id: '1',
-          message: 'Когда аванс?',
-          response: 'Аванс выплачивается 20 числа каждого месяца.',
-          timestamp: '2026-04-26T14:30:00.000Z'
-        }
-      ]
-    });
-
+    try {
+      const result = await query(
+        `SELECT id, role, content, created_at FROM chat_messages
+         WHERE employee_id = (SELECT id FROM employees WHERE employee_id = $1)
+         ORDER BY created_at ASC LIMIT 100`,
+        [employeeId]
+      );
+      return res.json({
+        history: result.rows.map((r) => ({
+          id: String(r.id),
+          role: r.role,
+          content: r.content,
+          timestamp: r.created_at
+        }))
+      });
+    } catch {
+      return res.json({ history: [] });
+    }
   } catch (error) {
     console.error('History error:', error);
-    res.status(500).json({
-      error: 'Failed to get chat history',
-      message: error.message
-    });
+    res.status(500).json({ error: 'Failed to get chat history', message: error.message });
   }
 });
 
