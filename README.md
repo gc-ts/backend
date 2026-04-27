@@ -1,523 +1,275 @@
-# HR AGENT AI - Backend
+# HR Agent AI — Backend
 
-Backend для HR AGENT AI с локальной моделью Ollama для обработки запросов сотрудников.
+Локальный backend для AI-ассистента «Техна» компании **1221 Системс**.
+Отвечает на вопросы сотрудников по HR-процессам, опираясь на загруженные ЛНА
+(ПВТР, положения, инструкции). Полностью офлайн: без обращений к внешним
+сервисам.
 
-## Технологии
+## Стек
 
-- **Node.js** + Express
-- **Ollama** - локальная LLM модель
-- **Multer** - загрузка файлов
-- **PDF-parse** - парсинг PDF документов
-- **Mammoth** - парсинг DOCX документов
+| Компонент | Что используется |
+| --- | --- |
+| Runtime | Node.js 18+, Express |
+| LLM | **Ollama** + `qwen2.5:32b-instruct-q4_K_M` (генерация) |
+| Эмбеддинги | **Ollama** + `bge-m3:latest` (1024-мерные) |
+| Векторное хранилище | in-process cosine search, persist в `data/vector-index.json` |
+| База данных | PostgreSQL 14 (сотрудники, отпуска, история чата, документы) |
+| Парсинг документов | `pdf-parse`, `mammoth` (PDF / DOCX / TXT / MD) |
+| Auth | bcryptjs + JWT |
+| Документация API | OpenAPI 3.0 + Swagger UI на `/docs` |
 
-## Установка
+## Архитектура запроса в чат
 
-### 1. Установка зависимостей
+```
+        ┌────────────┐    1. message + employeeId
+client →│ /api/chat/ │────────────────────────────────┐
+        │  message   │                                ▼
+        └────────────┘     ┌──────────────────────────────────────┐
+                           │ 2. RAG: bge-m3 embed → cosine top-K  │
+                           │    из data/vector-index.json         │
+                           └──────────────────────────────────────┘
+                                                ▼
+                           ┌──────────────────────────────────────┐
+                           │ 3. собираем системный промпт:        │
+                           │    • строгие правила (источник, ТК)  │
+                           │    • ДАННЫЕ СОТРУДНИКА (из БД)       │
+                           │    • КОНТЕКСТ (top-K чанков ЛНА)     │
+                           │    • история диалога (chat_messages) │
+                           └──────────────────────────────────────┘
+                                                ▼
+                           ┌──────────────────────────────────────┐
+                           │ 4. ollama.chat({ model: qwen2.5:32b })│
+                           └──────────────────────────────────────┘
+                                                ▼
+                           ┌──────────────────────────────────────┐
+                           │ 5. сохраняем (user, assistant) →     │
+                           │    chat_messages, отдаём JSON / SSE  │
+                           └──────────────────────────────────────┘
+```
+
+Соответствие ТЗ:
+
+* идентификация сотрудника по табельному / e-mail — `findEmployee()` (БД + fallback);
+* персонализация ответа («мой остаток отпуска» → реальные цифры) — блок
+  «ДАННЫЕ СОТРУДНИКА» в системном промпте;
+* поиск по PDF/DOCX — `services/docLoader.js` + `services/vectorStore.js`;
+* «не выдумывай факты» — жёсткие правила в промпте + fallback-сообщение с
+  контактом HR (`hr@company.ru`), если хитов нет;
+* указание источника (ЛНА, пункт) — секция `chunkText()` распознаёт нумерацию
+  «4.2», «10.1» и кладёт в `section`, который потом цитируется моделью;
+* всё локально — единственный внешний домен в коде это URL Ollama, который
+  по умолчанию `http://localhost:11434`.
+
+## Быстрый старт
+
+### 1. Зависимости
 
 ```bash
+# Ollama (один раз)
+curl -fsSL https://ollama.com/install.sh | sh
+ollama pull qwen2.5:32b-instruct-q4_K_M
+ollama pull bge-m3
+ollama serve   # запуск демона (если не systemd)
+
+# PostgreSQL
+sudo apt install -y postgresql postgresql-contrib
+sudo systemctl start postgresql
+sudo -u postgres psql -c "ALTER USER postgres WITH PASSWORD 'password'; CREATE DATABASE hr_agent;"
+
+# Backend
+cd backend
 npm install
+cp .env.example .env   # при желании отредактируйте
 ```
 
-### 2. Установка Ollama
+### 2. Документы для базы знаний
 
-Скачайте и установите Ollama с официального сайта: https://ollama.ai
+Положите PDF/DOCX/TXT в `data/docs/`. На старте сервер автоматически
+проиндексирует всё, что там есть. Если папки нет — она создастся, и сервер
+дополнительно подсадит из `~/`:
+
+* `ПВТР от 07.03.2025 №07.03.2025-1.docx`
+* `1221 Системс.pdf`
+
+### 3. Запуск
 
 ```bash
-# Для macOS
-brew install ollama
-
-# Запуск Ollama
-ollama serve
-
-# Загрузка модели llama3.2
-ollama pull llama3.2
+npm run dev    # nodemon
+npm start      # прод
 ```
 
-### 3. Настройка окружения
+При успешном старте:
 
-Скопируйте `.env.example` в `.env` и настройте переменные:
+```
+✅ Database connected: ...
+✅ Database schema initialized
+🌱 Database seeded with sample employees / vacations (password: password123)
+🧠 Запускаю индексацию документов…
+  📖 ПВТР.docx → "Правила внутреннего трудового распорядка" [ЛНА/Общие положения]
+  ✂️  Правила внутреннего трудового распорядка: 108 чанков, эмбеддинг…
+💾 Vector index saved: 109 chunks → ./data/vector-index.json
+✅ Индексация завершена: документов 2, чанков добавлено 109
+🚀 HR Agent Backend running on port 3000
+📖 OpenAPI:  http://localhost:3000/docs
+🤖 Chat:     qwen2.5:32b-instruct-q4_K_M ✓
+🔎 Embed:    bge-m3:latest ✓
+💾 Database: connected
+📚 RAG:      109 чанков в индексе
+```
+
+## Конфигурация (`.env`)
+
+| Переменная | По умолчанию | Что делает |
+| --- | --- | --- |
+| `PORT` | `3000` | Порт HTTP-сервера |
+| `OLLAMA_HOST` | `http://localhost:11434` | URL Ollama |
+| `OLLAMA_MODEL` | `qwen2.5:32b-instruct-q4_K_M` | LLM для чата |
+| `OLLAMA_EMBED_MODEL` | `bge-m3:latest` | Модель эмбеддингов |
+| `DB_*` | `localhost:5432 hr_agent / postgres / password` | PostgreSQL |
+| `JWT_SECRET` | `hr-agent-secret-change-me-in-prod` | Секрет JWT |
+| `RAG_TOP_K` | `4` | Сколько чанков подмешивать в контекст |
+| `RAG_MIN_SCORE` | `0.35` | Порог cosine — ниже считаем «не нашли» |
+| `RAG_CHUNK_SIZE` / `RAG_CHUNK_OVERLAP` | `900` / `150` | Параметры чанкера |
+| `RAG_DOCS_DIR` | `./data/docs` | Папка-источник документов |
+| `RAG_INDEX_PATH` | `./data/vector-index.json` | Куда писать индекс |
+| `MAX_FILE_SIZE` | `20971520` (20 MB) | Лимит загрузки |
+| `CORS_ORIGIN` | `*` | CORS |
+
+Если БД недоступна — сервер работает с in-memory заглушками сотрудников
+(12345, 67890, 11111). Если Ollama не отвечает — чат-эндпоинты вернут 500,
+остальные продолжают работать.
+
+## API
+
+Полная спецификация: **`http://localhost:3000/docs`** (Swagger UI),
+сырой YAML — `/openapi.yaml`, JSON — `/openapi.json`.
+
+### Сводка по группам
+
+| Метод | Путь | Описание |
+| --- | --- | --- |
+| GET  | `/health` | Состояние сервиса, моделей и RAG-индекса |
+| POST | `/api/auth/register` | Регистрация (email + пароль) |
+| POST | `/api/auth/login` | Логин → JWT |
+| POST | `/api/auth/verify` | Проверка JWT |
+| POST | `/api/chat/message` | Вопрос → ответ с источниками |
+| POST | `/api/chat/stream` | То же через Server-Sent Events |
+| GET  | `/api/chat/history/:employeeId` | История диалога из БД |
+| GET  | `/api/employee/:id` | Карточка сотрудника |
+| GET  | `/api/employee/:id/vacation` | Отпуск + график |
+| GET  | `/api/employee/:id/birthday` | День рождения и возраст |
+| GET  | `/api/employee/search/by-name?name=` | Поиск по ФИО |
+| POST | `/api/employee/auth` | Лёгкая идентификация (без пароля) |
+| GET  | `/api/documents` | Список документов (RAG + БД) |
+| POST | `/api/documents/upload` | Загрузка + авто-индексация |
+| DELETE | `/api/documents/:id` | Удаление + удаление чанков |
+| GET  | `/api/documents/meta/categories` | Список категорий |
+| POST | `/api/knowledge/search` | Поиск по KB (вектор + keyword) |
+| POST | `/api/knowledge/reindex` | Принудительная переиндексация |
+| GET  | `/api/knowledge/index` | Статистика индекса |
+
+### Примеры
 
 ```bash
-cp .env.example .env
-```
+# Состояние
+curl http://localhost:3000/health | jq
 
-Отредактируйте `.env`:
-```env
-PORT=3000
-OLLAMA_HOST=http://localhost:11434
-OLLAMA_MODEL=llama3.2
-CORS_ORIGIN=http://localhost:5173
-```
-
-## Запуск
-
-### Development режим
-
-```bash
-npm run dev
-```
-
-### Production режим
-
-```bash
-npm start
-```
-
-Сервер запустится на `http://localhost:3000`
-
-## API Endpoints
-
-### Health Check
-
-**GET** `/health`
-
-Проверка работоспособности сервера и Ollama.
-
-**Response:**
-```json
-{
-  "status": "ok",
-  "timestamp": "2026-04-27T10:03:18.200Z",
-  "ollama": "http://localhost:11434"
-}
-```
-
----
-
-## Chat API
-
-### Отправка сообщения
-
-**POST** `/api/chat/message`
-
-Отправка вопроса в чат и получение ответа от AI.
-
-**Request Body:**
-```json
-{
-  "message": "Как оформить отпуск?",
-  "employeeId": "12345"
-}
-```
-
-**Response:**
-```json
-{
-  "response": "Для оформления отпуска необходимо подать заявление за 14 дней...",
-  "source": "Правила внутреннего трудового распорядка, п. 4.2",
-  "timestamp": "2026-04-27T10:03:18.200Z"
-}
-```
-
-**Примеры запросов:**
-
-```bash
-# Вопрос об отпуске
+# Чат с персонализацией
 curl -X POST http://localhost:3000/api/chat/message \
   -H "Content-Type: application/json" \
-  -d '{"message": "Сколько у меня дней отпуска?", "employeeId": "12345"}'
+  -d '{"message":"Сколько у меня дней отпуска?","employeeId":"12345"}' | jq
 
-# Вопрос о зарплате
-curl -X POST http://localhost:3000/api/chat/message \
+# Стриминг (SSE)
+curl -N -X POST http://localhost:3000/api/chat/stream \
   -H "Content-Type: application/json" \
-  -d '{"message": "Когда аванс?"}'
+  -d '{"message":"Когда аванс?","employeeId":"12345"}'
 
-# Вопрос о ДМС
-curl -X POST http://localhost:3000/api/chat/message \
-  -H "Content-Type: application/json" \
-  -d '{"message": "Какие программы ДМС есть?"}'
-```
-
-### Получение истории чата
-
-**GET** `/api/chat/history/:employeeId`
-
-Получение истории сообщений сотрудника.
-
-**Response:**
-```json
-{
-  "history": [
-    {
-      "id": "1",
-      "message": "Когда аванс?",
-      "response": "Аванс выплачивается 20 числа каждого месяца.",
-      "timestamp": "2026-04-26T14:30:00.000Z"
-    }
-  ]
-}
-```
-
----
-
-## Employee API
-
-### Получение информации о сотруднике
-
-**GET** `/api/employee/:id`
-
-Получение полной информации о сотруднике по табельному номеру.
-
-**Response:**
-```json
-{
-  "id": "12345",
-  "fullName": "Потапов Артем Павлович",
-  "position": "Senior Developer",
-  "department": "IT",
-  "email": "a.potapov@company.ru",
-  "phone": "+7 (999) 123-45-67",
-  "hireDate": "2020-01-15",
-  "birthDate": "1990-05-20",
-  "vacationDays": 14,
-  "nextVacation": "2026-07-01",
-  "salary": 150000
-}
-```
-
-### Получение информации об отпуске
-
-**GET** `/api/employee/:id/vacation`
-
-Получение информации об отпуске сотрудника.
-
-**Response:**
-```json
-{
-  "remainingDays": 14,
-  "nextVacation": "2026-07-01",
-  "vacationSchedule": [
-    {
-      "startDate": "2026-07-01",
-      "endDate": "2026-07-14",
-      "days": 14,
-      "status": "planned"
-    }
-  ]
-}
-```
-
-### Аутентификация сотрудника
-
-**POST** `/api/employee/auth`
-
-Аутентификация по табельному номеру или email.
-
-**Request Body:**
-```json
-{
-  "employeeId": "12345",
-  "email": "a.potapov@company.ru"
-}
-```
-
-**Response:**
-```json
-{
-  "token": "jwt-token-12345-1714212198200",
-  "employee": {
-    "id": "12345",
-    "fullName": "Потапов Артем Павлович",
-    ...
-  }
-}
-```
-
-### Получение даты рождения
-
-**GET** `/api/employee/:id/birthday`
-
-Получение даты рождения сотрудника.
-
-**Response:**
-```json
-{
-  "birthDate": "1990-05-20",
-  "age": 35
-}
-```
-
----
-
-## Documents API
-
-### Получение списка документов
-
-**GET** `/api/documents`
-
-Получение списка всех документов в базе знаний.
-
-**Query Parameters:**
-- `category` - фильтр по категории
-- `type` - фильтр по типу документа
-
-**Response:**
-```json
-{
-  "documents": [
-    {
-      "id": "1",
-      "title": "Правила внутреннего трудового распорядка",
-      "type": "ЛНА",
-      "category": "Общие положения",
-      "uploadDate": "2026-01-15",
-      "fileUrl": "/documents/pvtr.pdf"
-    }
-  ]
-}
-```
-
-**Примеры:**
-```bash
-# Все документы
-curl http://localhost:3000/api/documents
-
-# Фильтр по категории
-curl http://localhost:3000/api/documents?category=Отпуска
-
-# Фильтр по типу
-curl http://localhost:3000/api/documents?type=ЛНА
-```
-
-### Получение документа по ID
-
-**GET** `/api/documents/:id`
-
-Получение информации о конкретном документе.
-
-**Response:**
-```json
-{
-  "id": "1",
-  "title": "Правила внутреннего трудового распорядка",
-  "type": "ЛНА",
-  "category": "Общие положения",
-  "uploadDate": "2026-01-15",
-  "fileUrl": "/documents/pvtr.pdf"
-}
-```
-
-### Загрузка документа
-
-**POST** `/api/documents/upload`
-
-Загрузка нового документа в базу знаний.
-
-**Request:** `multipart/form-data`
-- `file` - файл документа (PDF, DOCX, DOC, TXT)
-- `title` - название документа
-- `category` - категория
-- `type` - тип документа
-
-**Response:**
-```json
-{
-  "id": "5",
-  "title": "Новый документ",
-  "type": "Инструкция",
-  "category": "Отпуска",
-  "uploadDate": "2026-04-27",
-  "fileUrl": "/uploads/1714212198200-123456789.pdf",
-  "message": "Document uploaded successfully"
-}
-```
-
-**Пример:**
-```bash
+# Загрузка нового ЛНА — мгновенно появляется в RAG
 curl -X POST http://localhost:3000/api/documents/upload \
-  -F "file=@document.pdf" \
-  -F "title=Инструкция по отпускам" \
-  -F "category=Отпуска" \
-  -F "type=Инструкция"
+  -F "file=@policy.pdf" \
+  -F "title=Положение о премировании" \
+  -F "category=Заработная плата" \
+  -F "type=ЛНА"
+
+# Полный поиск по индексу
+curl -X POST http://localhost:3000/api/knowledge/search \
+  -H "Content-Type: application/json" \
+  -d '{"query":"перенос отпуска","topK":6}' | jq
 ```
 
-### Удаление документа
+### Ответ чата (структура)
 
-**DELETE** `/api/documents/:id`
-
-Удаление документа из базы знаний.
-
-**Response:**
 ```json
 {
-  "message": "Document deleted successfully"
+  "response": "У вас остаток отпуска 14 дней, ближайший — 1 июля 2026 …\n\nОснование: Правила внутреннего трудового распорядка, п. 7.6",
+  "source": "Правила внутреннего трудового распорядка, п. 7.6",
+  "hits": [
+    { "score": 0.66, "doc": "Правила внутреннего трудового распорядка", "section": "п. 7.6 …" }
+  ],
+  "timestamp": "2026-04-27T12:46:01.123Z"
 }
 ```
 
-### Получение категорий
+### Стриминг (SSE)
 
-**GET** `/api/documents/meta/categories`
-
-Получение списка всех категорий документов.
-
-**Response:**
-```json
-{
-  "categories": [
-    "Общие положения",
-    "Заработная плата",
-    "Льготы и компенсации",
-    "Отпуска"
-  ]
-}
 ```
-
----
-
-## Knowledge Base API
-
-### Получение базы знаний
-
-**GET** `/api/knowledge`
-
-Получение всей базы знаний.
-
-**Response:**
-```json
-{
-  "knowledge": {
-    "vacation": {
-      "title": "Отпуска",
-      "content": "...",
-      "source": "Правила внутреннего трудового распорядка, п. 4.2"
-    },
-    "salary": {...},
-    "sickLeave": {...},
-    "dms": {...},
-    "merch": {...},
-    "referral": {...}
-  }
-}
+data: {"type":"context","source":"ПВТР, п. 7.6","hits":[…]}
+data: {"type":"token","delta":"У вас "}
+data: {"type":"token","delta":"14 дней."}
+data: {"type":"done"}
 ```
-
-### Поиск в базе знаний
-
-**POST** `/api/knowledge/search`
-
-Поиск релевантной информации по запросу.
-
-**Request Body:**
-```json
-{
-  "query": "отпуск"
-}
-```
-
-**Response:**
-```json
-{
-  "result": {
-    "title": "Отпуска",
-    "content": "Правила предоставления отпусков...",
-    "source": "Правила внутреннего трудового распорядка, п. 4.2"
-  }
-}
-```
-
----
 
 ## Структура проекта
 
 ```
 backend/
+├── data/
+│   ├── docs/                     # сюда кладём PDF/DOCX для индексации
+│   └── vector-index.json         # persist векторов (auto)
+├── openapi.yaml                  # OpenAPI 3.0 спецификация
 ├── src/
+│   ├── config/
+│   │   ├── database.js           # пул pg + initDatabase + seedDatabase
+│   │   └── seed.sql              # справочный seed (используется опционально)
 │   ├── routes/
-│   │   ├── chat.js           # Эндпоинты чата
-│   │   ├── employee.js        # Эндпоинты сотрудников
-│   │   ├── documents.js       # Эндпоинты документов
-│   │   └── knowledge.js       # Эндпоинты базы знаний
+│   │   ├── auth.js               # /api/auth/* (register/login/verify)
+│   │   ├── chat.js               # /api/chat/* (message, stream, history)
+│   │   ├── employee.js           # /api/employee/*
+│   │   ├── documents.js          # /api/documents/* (+ загрузка → RAG)
+│   │   └── knowledge.js          # /api/knowledge/* (search/index/reindex)
 │   ├── services/
-│   │   ├── ollama.js          # Интеграция с Ollama
-│   │   └── knowledge.js       # База знаний
-│   └── server.js              # Главный файл сервера
-├── uploads/                   # Загруженные файлы
-├── .env.example               # Пример конфигурации
-├── .gitignore
+│   │   ├── ollama.js             # generate / stream / embed + системный промпт
+│   │   ├── vectorStore.js        # чанкер, cosine search, persist
+│   │   ├── docLoader.js          # PDF / DOCX / TXT → text
+│   │   ├── knowledge.js          # гибридный search + ingest при старте
+│   │   ├── employee.js           # БД + in-memory fallback
+│   │   └── auth.js               # bcrypt + JWT
+│   └── server.js                 # инициализация, /docs, ingest на старте
+├── uploads/                      # загруженные файлы
 ├── package.json
-└── README.md
+└── .env / .env.example
 ```
 
-## Что нужно сделать для продакшена
+## Тестовые сотрудники
 
-### 1. База данных
-Сейчас используются заглушки в памяти. Необходимо:
-- Подключить PostgreSQL или MongoDB
-- Создать схемы для сотрудников, документов, истории чатов
-- Реализовать миграции
+После `seedDatabase()` доступны (пароль для логина — `password123`):
 
-### 2. Векторная база данных
-Для улучшения поиска по документам:
-- Установить Qdrant, Pinecone или Weaviate
-- Создать эмбеддинги документов
-- Реализовать семантический поиск
+| Табельный | Email | ФИО | Должность |
+| --- | --- | --- | --- |
+| 12345 | a.potapov@company.ru | Потапов Артем Павлович | Senior Developer |
+| 67890 | m.ivanova@company.ru | Иванова Мария Сергеевна | HR Manager |
+| 11111 | p.petrov@company.ru | Петров Петр Петрович | Team Lead |
 
-### 3. Аутентификация
-- Реализовать полноценный JWT
-- Добавить refresh tokens
-- Интеграция с корпоративным SSO/LDAP
+## Что осталось «на потом»
 
-### 4. Парсинг документов
-- Реализовать парсинг PDF (pdf-parse)
-- Реализовать парсинг DOCX (mammoth)
-- Разбивка на чанки для векторизации
-
-### 5. Логирование и мониторинг
-- Winston или Pino для логов
-- Prometheus + Grafana для метрик
-- Sentry для отслеживания ошибок
-
-### 6. Тесты
-- Unit тесты (Jest)
-- Integration тесты
-- E2E тесты
-
-### 7. Docker
-- Создать Dockerfile
-- Docker Compose для всего стека (backend + Ollama + DB)
-
-## Примеры использования
-
-### Интеграция с фронтендом
-
-```javascript
-// Отправка сообщения в чат
-const sendMessage = async (message, employeeId) => {
-  const response = await fetch('http://localhost:3000/api/chat/message', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({ message, employeeId })
-  });
-  
-  const data = await response.json();
-  return data;
-};
-
-// Получение информации о сотруднике
-const getEmployee = async (employeeId) => {
-  const response = await fetch(`http://localhost:3000/api/employee/${employeeId}`);
-  const data = await response.json();
-  return data;
-};
-
-// Загрузка документа
-const uploadDocument = async (file, title, category, type) => {
-  const formData = new FormData();
-  formData.append('file', file);
-  formData.append('title', title);
-  formData.append('category', category);
-  formData.append('type', type);
-  
-  const response = await fetch('http://localhost:3000/api/documents/upload', {
-    method: 'POST',
-    body: formData
-  });
-  
-  const data = await response.json();
-  return data;
-};
-```
+* Векторный индекс in-memory — для < 10 000 чанков это ок; при росте перенести
+  на pgvector / Qdrant / Weaviate.
+* Загрузка `.doc` (старый формат Word) — сейчас поддерживается только `.docx`
+  через mammoth.
+* Refresh-токены, OIDC/SSO интеграция.
+* Rate-limiting и метрики (Prometheus / Sentry).
+* Dockerfile + docker-compose (backend + Ollama + Postgres) для one-shot
+  развёртывания.
 
 ## Лицензия
 

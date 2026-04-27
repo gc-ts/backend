@@ -1,0 +1,656 @@
+openapi: 3.0.3
+info:
+  title: HR Agent AI — Backend API
+  version: "1.0.0"
+  description: |
+    Backend для AI-ассистента «Техна» по HR-вопросам компании 1221 Системс.
+    Полностью локальная архитектура: Node.js/Express + PostgreSQL + Ollama
+    (qwen2.5:32b для генерации, bge-m3 для эмбеддингов) + локальный
+    RAG-индекс по ЛНА (ПВТР, положения, инструкции).
+
+    Возможности:
+      * Идентификация сотрудника по табельному номеру / e-mail.
+      * Чат с ответами, обоснованными цитатами из загруженных документов.
+      * Стриминг ответа через Server-Sent Events.
+      * Загрузка PDF/DOCX/TXT с автоматической индексацией в векторное хранилище.
+      * История диалога, реквизиты сотрудника, графики отпусков.
+  contact:
+    name: HR Department
+    email: hr@company.ru
+  license:
+    name: MIT
+
+servers:
+  - url: http://localhost:3000
+    description: Local dev
+
+tags:
+  - name: System
+  - name: Auth
+  - name: Chat
+  - name: Employee
+  - name: Documents
+  - name: Knowledge
+
+paths:
+  /health:
+    get:
+      tags: [System]
+      summary: Состояние сервиса, Ollama и RAG-индекса
+      responses:
+        "200":
+          description: OK / degraded
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Health"
+
+  /api/auth/register:
+    post:
+      tags: [Auth]
+      summary: Регистрация сотрудника (с паролем)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RegisterRequest"
+      responses:
+        "201":
+          description: Создан
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message: { type: string }
+                  employee: { $ref: "#/components/schemas/EmployeeDB" }
+        "400":
+          $ref: "#/components/responses/Error"
+
+  /api/auth/login:
+    post:
+      tags: [Auth]
+      summary: Логин по e-mail/табельному + пароль (выдаёт JWT)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [login, password]
+              properties:
+                login: { type: string, example: "12345" }
+                password: { type: string, example: "password123" }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  token: { type: string }
+                  employee: { $ref: "#/components/schemas/EmployeeDB" }
+        "401":
+          $ref: "#/components/responses/Error"
+
+  /api/auth/verify:
+    post:
+      tags: [Auth]
+      summary: Проверка JWT-токена
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: Токен валиден
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  valid: { type: boolean }
+                  user: { type: object }
+        "401":
+          $ref: "#/components/responses/Error"
+
+  /api/chat/message:
+    post:
+      tags: [Chat]
+      summary: Задать вопрос ассистенту (синхронный ответ)
+      description: |
+        Извлекает релевантные фрагменты из RAG, подмешивает данные сотрудника
+        и историю диалога, генерирует ответ на qwen2.5:32b. В ответе всегда
+        указывается источник (документ + пункт ЛНА).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ChatRequest"
+            examples:
+              vacation:
+                summary: «Сколько у меня дней отпуска?»
+                value:
+                  message: "Сколько у меня осталось дней отпуска?"
+                  employeeId: "12345"
+              salary:
+                summary: «Когда аванс?»
+                value:
+                  message: "Когда выплачивается аванс?"
+              dms:
+                summary: «Какие программы ДМС есть?»
+                value:
+                  message: "Какие программы ДМС у нас есть?"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ChatResponse"
+        "400":
+          $ref: "#/components/responses/Error"
+        "500":
+          $ref: "#/components/responses/Error"
+
+  /api/chat/stream:
+    post:
+      tags: [Chat]
+      summary: Тот же ответ, но потоком через Server-Sent Events
+      description: |
+        Возвращает поток `text/event-stream`. Тело каждого события — JSON одного
+        из видов:
+          * `{"type":"context","source":"...","hits":[...]}` — однократно в начале
+          * `{"type":"token","delta":"..."}` — токены ответа
+          * `{"type":"done"}` — конец стрима
+          * `{"type":"error","error":"..."}` — ошибка
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ChatRequest"
+      responses:
+        "200":
+          description: SSE-поток
+          content:
+            text/event-stream:
+              schema:
+                type: string
+                example: |
+                  data: {"type":"context","source":"ПВТР, п. 7.6","hits":[]}
+
+                  data: {"type":"token","delta":"У вас "}
+
+                  data: {"type":"token","delta":"14 дней."}
+
+                  data: {"type":"done"}
+        "400":
+          $ref: "#/components/responses/Error"
+
+  /api/chat/history/{employeeId}:
+    get:
+      tags: [Chat]
+      summary: История чата сотрудника
+      parameters:
+        - $ref: "#/components/parameters/EmployeeId"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  history:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/ChatHistoryItem"
+
+  /api/employee/{id}:
+    get:
+      tags: [Employee]
+      summary: Карточка сотрудника по табельному номеру
+      parameters:
+        - $ref: "#/components/parameters/EmployeeId"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EmployeePublic"
+        "404":
+          $ref: "#/components/responses/Error"
+
+  /api/employee/{id}/vacation:
+    get:
+      tags: [Employee]
+      summary: Остаток отпуска и график
+      parameters:
+        - $ref: "#/components/parameters/EmployeeId"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VacationInfo"
+
+  /api/employee/{id}/birthday:
+    get:
+      tags: [Employee]
+      summary: Дата рождения и возраст
+      parameters:
+        - $ref: "#/components/parameters/EmployeeId"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  birthDate: { type: string, format: date, nullable: true }
+                  age: { type: integer, nullable: true }
+
+  /api/employee/auth:
+    post:
+      tags: [Employee]
+      summary: Лёгкая идентификация по табельному/e-mail (без пароля)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                employeeId: { type: string, example: "12345" }
+                email: { type: string, example: "a.potapov@company.ru" }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  token: { type: string }
+                  employee: { $ref: "#/components/schemas/EmployeePublic" }
+        "404":
+          $ref: "#/components/responses/Error"
+
+  /api/employee/search/by-name:
+    get:
+      tags: [Employee]
+      summary: Поиск сотрудника по ФИО (для вопросов «когда день рождения <имя>»)
+      parameters:
+        - in: query
+          name: name
+          required: true
+          schema: { type: string }
+          example: "Иванова"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  results:
+                    type: array
+                    items: { $ref: "#/components/schemas/EmployeePublic" }
+
+  /api/documents:
+    get:
+      tags: [Documents]
+      summary: Список документов
+      parameters:
+        - in: query
+          name: category
+          schema: { type: string }
+        - in: query
+          name: type
+          schema: { type: string }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  documents:
+                    type: array
+                    items: { $ref: "#/components/schemas/Document" }
+
+  /api/documents/{id}:
+    get:
+      tags: [Documents]
+      summary: Документ по id
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Document" }
+        "404":
+          $ref: "#/components/responses/Error"
+    delete:
+      tags: [Documents]
+      summary: Удалить документ (вместе с чанками RAG)
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message: { type: string }
+                  removedChunks: { type: integer }
+
+  /api/documents/upload:
+    post:
+      tags: [Documents]
+      summary: Загрузка нового документа (PDF/DOCX/TXT/MD) — авто-индексация в RAG
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                title:    { type: string, example: "Положение о премировании" }
+                category: { type: string, example: "Заработная плата" }
+                type:     { type: string, example: "ЛНА" }
+      responses:
+        "201":
+          description: Загружен и проиндексирован
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Document"
+                  - type: object
+                    properties:
+                      chunkCount: { type: integer, example: 17 }
+                      message:    { type: string }
+
+  /api/documents/meta/categories:
+    get:
+      tags: [Documents]
+      summary: Список категорий
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  categories:
+                    type: array
+                    items: { type: string }
+
+  /api/knowledge:
+    get:
+      tags: [Knowledge]
+      summary: Базовая «быстрая» KB + статистика RAG-индекса
+      responses:
+        "200":
+          description: OK
+
+  /api/knowledge/search:
+    post:
+      tags: [Knowledge]
+      summary: Поиск по базе знаний (вектор + keyword fallback)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [query]
+              properties:
+                query:    { type: string, example: "перенос отпуска" }
+                topK:     { type: integer, default: 4 }
+                minScore: { type: number,  default: 0.35 }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  result:
+                    type: object
+                    properties:
+                      title:   { type: string }
+                      content: { type: string }
+                      source:  { type: string }
+                  hits:
+                    type: array
+                    items: { $ref: "#/components/schemas/RagHit" }
+
+  /api/knowledge/reindex:
+    post:
+      tags: [Knowledge]
+      summary: Принудительная переиндексация папки RAG_DOCS_DIR
+      responses:
+        "200":
+          description: Готово
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:  { type: string }
+                  indexed:  { type: integer }
+                  chunks:   { type: integer }
+                  total:    { type: integer }
+
+  /api/knowledge/index:
+    get:
+      tags: [Knowledge]
+      summary: Состояние векторного индекса
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  stats:
+                    type: object
+                    properties:
+                      total: { type: integer }
+                      byDocument:
+                        type: object
+                        additionalProperties: { type: integer }
+                  documents:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:         { type: string }
+                        title:      { type: string }
+                        type:       { type: string }
+                        category:   { type: string }
+                        sourcePath: { type: string }
+                        chunkCount: { type: integer }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  parameters:
+    EmployeeId:
+      in: path
+      name: id
+      required: true
+      schema: { type: string }
+      example: "12345"
+
+  responses:
+    Error:
+      description: Ошибка
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+
+  schemas:
+    Error:
+      type: object
+      properties:
+        error:   { type: string }
+        message: { type: string }
+
+    Health:
+      type: object
+      properties:
+        status:    { type: string, enum: [ok, degraded] }
+        timestamp: { type: string, format: date-time }
+        ollama:
+          type: object
+          properties:
+            ok:                    { type: boolean }
+            host:                  { type: string }
+            chatModel:             { type: string }
+            embedModel:            { type: string }
+            chatModelAvailable:    { type: boolean }
+            embedModelAvailable:   { type: boolean }
+            models:
+              type: array
+              items: { type: string }
+        database:  { type: string, enum: [connected, disconnected] }
+        rag:
+          type: object
+          properties:
+            total: { type: integer }
+            byDocument:
+              type: object
+              additionalProperties: { type: integer }
+
+    RegisterRequest:
+      type: object
+      required: [employeeId, email, password, fullName]
+      properties:
+        employeeId: { type: string, example: "12345" }
+        email:      { type: string, example: "a.potapov@company.ru" }
+        password:   { type: string, example: "password123" }
+        fullName:   { type: string, example: "Потапов Артем Павлович" }
+        position:   { type: string, example: "Senior Developer" }
+        department: { type: string, example: "IT" }
+        birthDate:  { type: string, format: date, example: "1990-05-20" }
+        hireDate:   { type: string, format: date, example: "2020-01-15" }
+        phone:      { type: string, example: "+7 (999) 123-45-67" }
+
+    EmployeeDB:
+      type: object
+      properties:
+        id:           { type: integer }
+        employee_id:  { type: string }
+        email:        { type: string }
+        full_name:    { type: string }
+        position:     { type: string }
+        department:   { type: string }
+        birth_date:   { type: string, format: date, nullable: true }
+        hire_date:    { type: string, format: date, nullable: true }
+        phone:        { type: string, nullable: true }
+        vacation_days:{ type: integer }
+        created_at:   { type: string, format: date-time }
+
+    EmployeePublic:
+      type: object
+      properties:
+        id:           { type: string, example: "12345" }
+        fullName:     { type: string, example: "Потапов Артем Павлович" }
+        position:     { type: string }
+        department:   { type: string }
+        email:        { type: string }
+        phone:        { type: string }
+        hireDate:     { type: string, format: date, nullable: true }
+        birthDate:    { type: string, format: date, nullable: true }
+        vacationDays: { type: integer }
+        nextVacation: { type: string, format: date, nullable: true }
+        salary:       { type: integer, nullable: true }
+
+    VacationInfo:
+      type: object
+      properties:
+        remainingDays: { type: integer }
+        nextVacation:  { type: string, format: date, nullable: true }
+        vacationSchedule:
+          type: array
+          items:
+            type: object
+            properties:
+              startDate: { type: string, format: date }
+              endDate:   { type: string, format: date, nullable: true }
+              days:      { type: integer }
+              status:    { type: string, example: "planned" }
+
+    ChatRequest:
+      type: object
+      required: [message]
+      properties:
+        message:    { type: string, example: "Сколько у меня осталось дней отпуска?" }
+        employeeId: { type: string, example: "12345" }
+
+    RagHit:
+      type: object
+      properties:
+        score:    { type: number, example: 0.66 }
+        doc:      { type: string, example: "Правила внутреннего трудового распорядка" }
+        section:  { type: string, example: "п. 7.6" }
+
+    ChatResponse:
+      type: object
+      properties:
+        response:  { type: string }
+        source:    { type: string, nullable: true }
+        hits:
+          type: array
+          items: { $ref: "#/components/schemas/RagHit" }
+        timestamp: { type: string, format: date-time }
+
+    ChatHistoryItem:
+      type: object
+      properties:
+        id:        { type: string }
+        role:      { type: string, enum: [user, assistant] }
+        content:   { type: string }
+        timestamp: { type: string, format: date-time }
+
+    Document:
+      type: object
+      properties:
+        id:          { type: string }
+        title:       { type: string }
+        type:        { type: string }
+        category:    { type: string }
+        uploadDate:  { type: string, nullable: true }
+        fileUrl:     { type: string }
+        chunkCount:  { type: integer, nullable: true }
+        indexed:     { type: boolean, nullable: true }

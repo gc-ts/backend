@@ -1,6 +1,11 @@
 import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import swaggerUi from 'swagger-ui-express';
+import YAML from 'yaml';
 import { initDatabase, seedDatabase, checkConnection } from './config/database.js';
 import { checkOllamaHealth } from './services/ollama.js';
 import { ingestStartupDocuments } from './services/knowledge.js';
@@ -11,10 +16,13 @@ import employeeRoutes from './routes/employee.js';
 import documentsRoutes from './routes/documents.js';
 import knowledgeRoutes from './routes/knowledge.js';
 
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
 dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+const HOST = process.env.HOST || '0.0.0.0';
 
 app.use(
   cors({
@@ -26,6 +34,32 @@ app.use(
 );
 app.use(express.json({ limit: '2mb' }));
 app.use(express.urlencoded({ extended: true }));
+
+// OpenAPI spec + Swagger UI
+const OPENAPI_PATH = path.resolve(__dirname, '..', 'openapi.yaml');
+let openapiDoc = null;
+try {
+  openapiDoc = YAML.parse(fs.readFileSync(OPENAPI_PATH, 'utf-8'));
+} catch (e) {
+  console.warn('⚠️  openapi.yaml not loaded:', e.message);
+}
+app.get('/openapi.yaml', (_req, res) => {
+  res.type('text/yaml').sendFile(OPENAPI_PATH);
+});
+app.get('/openapi.json', (_req, res) => {
+  if (!openapiDoc) return res.status(404).json({ error: 'spec not loaded' });
+  res.json(openapiDoc);
+});
+if (openapiDoc) {
+  app.use(
+    '/docs',
+    swaggerUi.serve,
+    swaggerUi.setup(openapiDoc, {
+      customSiteTitle: 'HR Agent API',
+      swaggerOptions: { persistAuthorization: true, displayRequestDuration: true }
+    })
+  );
+}
 
 app.use('/api/auth', authRoutes);
 app.use('/api/chat', chatRoutes);
@@ -81,9 +115,10 @@ const startServer = async () => {
       }
     }
 
-    app.listen(PORT, () => {
+    app.listen(PORT, HOST, () => {
       console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-      console.log(`🚀 HR Agent Backend running on port ${PORT}`);
+      console.log(`🚀 HR Agent Backend running on http://${HOST}:${PORT}`);
+      console.log(`📖 OpenAPI:  http://${HOST}:${PORT}/docs (raw: /openapi.yaml)`);
       console.log(`📡 Ollama:   ${ollama.host}`);
       console.log(`🤖 Chat:     ${ollama.chatModel}${ollama.chatModelAvailable ? ' ✓' : ' ✗ (не загружена)'}`);
       console.log(`🔎 Embed:    ${ollama.embedModel}${ollama.embedModelAvailable ? ' ✓' : ' ✗ (не загружена)'}`);
