@@ -210,11 +210,13 @@ npm start      # прод
 | POST | `/api/chat/stream` | То же через Server-Sent Events |
 | GET  | `/api/chat/history/:employeeId` | История диалога из БД |
 | GET  | `/api/employee/:id` | Карточка сотрудника |
+| PUT  | `/api/employee/:id` | Сотрудник редактирует свою mock-карточку; admin может редактировать любую |
 | GET  | `/api/employee/:id/vacation` | Отпуск + график |
 | GET  | `/api/employee/:id/birthday` | День рождения и возраст |
 | GET  | `/api/employee/search/by-name?name=` | Поиск по ФИО |
 | POST | `/api/employee/auth` | Лёгкая идентификация (без пароля) |
 | GET  | `/api/employee/admin/list` | Admin: список редактируемых mock-карточек сотрудников |
+| GET  | `/api/employee/admin/:id` | Admin: получить любую mock-карточку сотрудника |
 | POST | `/api/employee/admin` | Admin: создать mock-карточку сотрудника |
 | PUT  | `/api/employee/admin/:id` | Admin: обновить персональные данные сотрудника |
 | POST | `/api/employee/admin/:id/vacations` | Admin: добавить плановый отпуск |
@@ -250,6 +252,12 @@ curl -X PUT http://localhost:3000/api/employee/admin/11111111111 \
   -H "Authorization: Bearer <admin-jwt>" \
   -H "Content-Type: application/json" \
   -d '{"vacationDays":27,"salary":91000,"birthDate":"1997-09-18"}' | jq
+
+# Сотрудник: обновить свои поля по JWT, полученному через /api/employee/auth
+curl -X PUT http://localhost:3000/api/employee/11111111111 \
+  -H "Authorization: Bearer <employee-jwt>" \
+  -H "Content-Type: application/json" \
+  -d '{"birthDate":"1997-09-19","salary":92000,"telegram":"@anastasia_test"}' | jq
 
 # Стриминг (SSE)
 curl -N -X POST http://localhost:3000/api/chat/stream \

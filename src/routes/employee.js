@@ -41,6 +41,43 @@ function shape(employee) {
   };
 }
 
+function selfEditablePayload(body) {
+  const allowed = [
+    'email',
+    'fullName',
+    'full_name',
+    'position',
+    'department',
+    'birthDate',
+    'birth_date',
+    'hireDate',
+    'hire_date',
+    'phone',
+    'vacationDays',
+    'vacation_days',
+    'salary',
+    'bonusBalance',
+    'bonus_balance',
+    'middleName',
+    'middle_name',
+    'city',
+    'telegram',
+    'additionalEmail',
+    'additional_email',
+    'oneCCode',
+    'one_c_code',
+    'medicalExamDate',
+    'medical_exam_date',
+    'sanitaryMinimumDate',
+    'sanitary_minimum_date'
+  ];
+  return Object.fromEntries(
+    allowed
+      .filter((key) => Object.prototype.hasOwnProperty.call(body, key))
+      .map((key) => [key, body[key]])
+  );
+}
+
 /**
  * GET /api/employee/admin/list
  * Admin: список редактируемых mock-карточек сотрудников.
@@ -87,6 +124,20 @@ router.put('/admin/:id', authMiddleware, requireAdmin, async (req, res) => {
 });
 
 /**
+ * GET /api/employee/admin/:id
+ * Admin: получить любую mock-карточку сотрудника.
+ */
+router.get('/admin/:id', authMiddleware, requireAdmin, async (req, res) => {
+  try {
+    const emp = await findEmployee({ employeeId: req.params.id });
+    if (!emp) return res.status(404).json({ error: 'Employee not found' });
+    res.json(shape(emp));
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to get employee data', message: error.message });
+  }
+});
+
+/**
  * DELETE /api/employee/admin/:id
  * Admin: удалить mock-карточку сотрудника. Admin-пользователь защищен от удаления.
  */
@@ -111,6 +162,23 @@ router.post('/admin/:id/vacations', authMiddleware, requireAdmin, async (req, re
     res.status(201).json({ vacation });
   } catch (error) {
     res.status(500).json({ error: 'Failed to create vacation', message: error.message });
+  }
+});
+
+/**
+ * PUT /api/employee/:id
+ * Сотрудник редактирует свою mock-карточку. Admin может редактировать любую.
+ * Для self-запроса role и employeeId не меняются.
+ */
+router.put('/:id', authMiddleware, requireSelf('id'), async (req, res) => {
+  try {
+    const isAdminRequest = req.user.role === 'admin';
+    const payload = isAdminRequest ? req.body : selfEditablePayload(req.body);
+    const employee = await updateEmployee(req.params.id, payload);
+    if (!employee) return res.status(404).json({ error: 'Employee not found' });
+    res.json({ employee: shape(employee) });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to update employee', message: error.message });
   }
 });
 

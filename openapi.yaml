@@ -30,9 +30,16 @@ info:
     | `POST /api/auth/verify`               |  ❌    |  ✅                      |  ✅    |
     | `POST /api/employee/auth`             |  ✅    |  ✅                      |  ✅    |
     | `GET  /api/employee/{id}`             |  ❌    |  только свой `id`        |  любой `id` |
+    | `PUT  /api/employee/{id}`             |  ❌    |  только свой `id`        |  любой `id` |
     | `GET  /api/employee/{id}/vacation`    |  ❌    |  только свой `id`        |  любой `id` |
     | `GET  /api/employee/{id}/birthday`    |  ❌    |  только свой `id`        |  любой `id` |
     | `GET  /api/employee/search/by-name`   |  ❌    |  ✅                      |  ✅    |
+    | `GET  /api/employee/admin/list`       |  ❌    |  ❌ (403)               |  ✅ (admin only) |
+    | `GET  /api/employee/admin/{id}`       |  ❌    |  ❌ (403)               |  ✅ (admin only) |
+    | `POST /api/employee/admin`            |  ❌    |  ❌ (403)               |  ✅ (admin only) |
+    | `PUT  /api/employee/admin/{id}`       |  ❌    |  ❌ (403)               |  ✅ (admin only) |
+    | `POST /api/employee/admin/{id}/vacations` | ❌ |  ❌ (403)               |  ✅ (admin only) |
+    | `DELETE /api/employee/admin/{id}`     |  ❌    |  ❌ (403)               |  ✅ (admin only) |
     | `POST /api/chat/message`              |  ❌    |  ✅ (от своего имени)    |  ✅ (можно указать `employeeId`) |
     | `POST /api/chat/stream`                |  ❌    |  ✅ (от своего имени)    |  ✅ (можно указать `employeeId`) |
     | `GET  /api/chat/history/{employeeId}` |  ❌    |  только свой `employeeId`|  любой `employeeId` |
@@ -313,6 +320,179 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/EmployeePublic"
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+    put:
+      tags: [Employee]
+      summary: Обновить свою карточку сотрудника
+      description: |
+        **Требует JWT.**
+        * Сотрудник: только свой `id`; `role` и `employeeId` игнорируются.
+        * Админ: любой `id`; для полного редактирования также доступен `/api/employee/admin/{id}`.
+      parameters:
+        - $ref: "#/components/parameters/EmployeeId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EmployeeUpdateRequest"
+      responses:
+        "200":
+          description: Обновлено
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  employee: { $ref: "#/components/schemas/EmployeePublic" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+
+  /api/employee/admin/list:
+    get:
+      tags: [Employee]
+      summary: "Admin: список редактируемых карточек сотрудников"
+      description: "**Только admin.** Возвращает mock/DB-карточки сотрудников."
+      parameters:
+        - in: query
+          name: search
+          schema: { type: string }
+          description: Поиск по ФИО, email, табельному, должности или подразделению.
+        - in: query
+          name: limit
+          schema: { type: integer, default: 100, maximum: 500 }
+        - in: query
+          name: offset
+          schema: { type: integer, default: 0 }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  employees:
+                    type: array
+                    items: { $ref: "#/components/schemas/EmployeePublic" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+
+  /api/employee/admin:
+    post:
+      tags: [Employee]
+      summary: "Admin: создать карточку сотрудника"
+      description: "**Только admin.** Создаёт редактируемую mock/DB-карточку сотрудника."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: "#/components/schemas/EmployeeUpdateRequest"
+                - type: object
+                  required: [employeeId, email, fullName]
+                  properties:
+                    employeeId: { type: string, example: "11111111111" }
+                    password: { type: string, default: "password123" }
+      responses:
+        "201":
+          description: Создано
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  employee: { $ref: "#/components/schemas/EmployeePublic" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+
+  /api/employee/admin/{id}:
+    get:
+      tags: [Employee]
+      summary: "Admin: получить любую карточку сотрудника"
+      description: "**Только admin.**"
+      parameters:
+        - $ref: "#/components/parameters/EmployeeId"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EmployeePublic"
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+    put:
+      tags: [Employee]
+      summary: "Admin: обновить любую карточку сотрудника"
+      description: "**Только admin.** Позволяет менять все поля карточки, включая `role` и `employeeId`."
+      parameters:
+        - $ref: "#/components/parameters/EmployeeId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EmployeeUpdateRequest"
+      responses:
+        "200":
+          description: Обновлено
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  employee: { $ref: "#/components/schemas/EmployeePublic" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+    delete:
+      tags: [Employee]
+      summary: "Admin: удалить карточку сотрудника"
+      description: "**Только admin.** Admin-пользователь защищён от удаления."
+      parameters:
+        - $ref: "#/components/parameters/EmployeeId"
+      responses:
+        "200":
+          description: Удалено
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  deleted: { $ref: "#/components/schemas/EmployeePublic" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+
+  /api/employee/admin/{id}/vacations:
+    post:
+      tags: [Employee]
+      summary: "Admin: добавить плановый отпуск"
+      description: "**Только admin.**"
+      parameters:
+        - $ref: "#/components/parameters/EmployeeId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [startDate, endDate, days]
+              properties:
+                startDate: { type: string, format: date, example: "2026-08-01" }
+                endDate: { type: string, format: date, example: "2026-08-14" }
+                days: { type: integer, example: 14 }
+                status: { type: string, default: "planned" }
+      responses:
+        "201":
+          description: Создано
         "401": { $ref: "#/components/responses/Error" }
         "403": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
@@ -762,7 +942,16 @@ components:
         birth_date:   { type: string, format: date, nullable: true }
         hire_date:    { type: string, format: date, nullable: true }
         phone:        { type: string, nullable: true }
-        vacation_days:{ type: integer }
+        vacation_days: { type: integer }
+        salary:       { type: number, nullable: true }
+        bonus_balance: { type: integer, nullable: true }
+        middle_name:  { type: string, nullable: true }
+        city:         { type: string, nullable: true }
+        telegram:     { type: string, nullable: true }
+        additional_email: { type: string, nullable: true }
+        one_c_code:   { type: string, nullable: true }
+        medical_exam_date: { type: string, format: date, nullable: true }
+        sanitary_minimum_date: { type: string, format: date, nullable: true }
         role:         { type: string, enum: [employee, admin], example: "employee" }
         created_at:   { type: string, format: date-time }
 
@@ -779,7 +968,44 @@ components:
         birthDate:    { type: string, format: date, nullable: true }
         vacationDays: { type: integer }
         nextVacation: { type: string, format: date, nullable: true }
-        salary:       { type: integer, nullable: true }
+        salary:       { type: number, nullable: true }
+        bonusBalance: { type: integer, nullable: true }
+        middleName:   { type: string, nullable: true }
+        city:         { type: string, nullable: true }
+        telegram:     { type: string, nullable: true }
+        additionalEmail: { type: string, nullable: true }
+        oneCCode:     { type: string, nullable: true }
+        medicalExamDate: { type: string, format: date, nullable: true }
+        sanitaryMinimumDate: { type: string, format: date, nullable: true }
+        role:         { type: string, enum: [employee, admin] }
+        createdAt:    { type: string, format: date-time, nullable: true }
+        updatedAt:    { type: string, format: date-time, nullable: true }
+
+    EmployeeUpdateRequest:
+      type: object
+      description: |
+        Поля для редактируемой mock/DB-карточки сотрудника.
+        Для self-запроса `/api/employee/{id}` поля `employeeId` и `role` игнорируются.
+      properties:
+        employeeId: { type: string, example: "11111111111" }
+        email: { type: string, example: "nastyakisnik@gmail.com" }
+        fullName: { type: string, example: "Анастасия Тестовая" }
+        position: { type: string, example: "Сотрудник" }
+        department: { type: string, example: "Практика" }
+        birthDate: { type: string, format: date, nullable: true, example: "1997-09-19" }
+        hireDate: { type: string, format: date, nullable: true, example: "2026-03-17" }
+        phone: { type: string, nullable: true }
+        vacationDays: { type: integer, nullable: true, example: 27 }
+        salary: { type: number, nullable: true, example: 93000 }
+        bonusBalance: { type: integer, nullable: true, example: 7 }
+        middleName: { type: string, nullable: true }
+        city: { type: string, nullable: true, example: "Нижний Новгород" }
+        telegram: { type: string, nullable: true, example: "@self_edit_test" }
+        additionalEmail: { type: string, nullable: true }
+        oneCCode: { type: string, nullable: true }
+        medicalExamDate: { type: string, format: date, nullable: true }
+        sanitaryMinimumDate: { type: string, format: date, nullable: true }
+        role: { type: string, enum: [employee, admin], example: "employee" }
 
     VacationInfo:
       type: object
