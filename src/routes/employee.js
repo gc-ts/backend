@@ -1,7 +1,15 @@
 import express from 'express';
-import { findEmployee, findEmployeeByName } from '../services/employee.js';
+import {
+  createEmployee,
+  deleteEmployee,
+  findEmployee,
+  findEmployeeByName,
+  listEmployees,
+  updateEmployee,
+  upsertVacation
+} from '../services/employee.js';
 import { query } from '../config/database.js';
-import { authMiddleware, requireSelf } from '../services/auth.js';
+import { authMiddleware, generateToken, requireAdmin, requireSelf } from '../services/auth.js';
 
 const router = express.Router();
 
@@ -18,9 +26,93 @@ function shape(employee) {
     birthDate: employee.birth_date,
     vacationDays: employee.vacation_days,
     nextVacation: employee.next_vacation || null,
-    salary: employee.salary
+    salary: employee.salary == null ? null : Number(employee.salary),
+    bonusBalance: employee.bonus_balance ?? null,
+    middleName: employee.middle_name || null,
+    city: employee.city || null,
+    telegram: employee.telegram || null,
+    additionalEmail: employee.additional_email || null,
+    oneCCode: employee.one_c_code || null,
+    medicalExamDate: employee.medical_exam_date || null,
+    sanitaryMinimumDate: employee.sanitary_minimum_date || null,
+    role: employee.role || 'employee',
+    createdAt: employee.created_at || null,
+    updatedAt: employee.updated_at || null
   };
 }
+
+/**
+ * GET /api/employee/admin/list
+ * Admin: список редактируемых mock-карточек сотрудников.
+ */
+router.get('/admin/list', authMiddleware, requireAdmin, async (req, res) => {
+  try {
+    const employees = await listEmployees({
+      search: req.query.search,
+      limit: req.query.limit,
+      offset: req.query.offset
+    });
+    res.json({ employees: employees.map(shape).filter(Boolean) });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to list employees', message: error.message });
+  }
+});
+
+/**
+ * POST /api/employee/admin
+ * Admin: создать mock-карточку сотрудника.
+ */
+router.post('/admin', authMiddleware, requireAdmin, async (req, res) => {
+  try {
+    const employee = await createEmployee(req.body);
+    res.status(201).json({ employee: shape(employee) });
+  } catch (error) {
+    const status = /required|duplicate|unique/i.test(error.message) ? 400 : 500;
+    res.status(status).json({ error: 'Failed to create employee', message: error.message });
+  }
+});
+
+/**
+ * PUT /api/employee/admin/:id
+ * Admin: обновить mock-карточку сотрудника.
+ */
+router.put('/admin/:id', authMiddleware, requireAdmin, async (req, res) => {
+  try {
+    const employee = await updateEmployee(req.params.id, req.body);
+    if (!employee) return res.status(404).json({ error: 'Employee not found' });
+    res.json({ employee: shape(employee) });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to update employee', message: error.message });
+  }
+});
+
+/**
+ * DELETE /api/employee/admin/:id
+ * Admin: удалить mock-карточку сотрудника. Admin-пользователь защищен от удаления.
+ */
+router.delete('/admin/:id', authMiddleware, requireAdmin, async (req, res) => {
+  try {
+    const employee = await deleteEmployee(req.params.id);
+    if (!employee) return res.status(404).json({ error: 'Employee not found or protected' });
+    res.json({ deleted: shape(employee) });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to delete employee', message: error.message });
+  }
+});
+
+/**
+ * POST /api/employee/admin/:id/vacations
+ * Admin: добавить плановый отпуск сотруднику.
+ */
+router.post('/admin/:id/vacations', authMiddleware, requireAdmin, async (req, res) => {
+  try {
+    const vacation = await upsertVacation(req.params.id, req.body);
+    if (!vacation) return res.status(404).json({ error: 'Employee not found' });
+    res.status(201).json({ vacation });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to create vacation', message: error.message });
+  }
+});
 
 /**
  * GET /api/employee/:id
@@ -94,7 +186,12 @@ router.post('/auth', async (req, res) => {
     const emp = await findEmployee({ employeeId, email });
     if (!emp) return res.status(404).json({ error: 'Employee not found' });
 
-    const token = `id-token-${emp.employee_id || emp.id}-${Date.now()}`;
+    const token = generateToken({
+      id: emp.id,
+      employeeId: emp.employee_id || emp.id,
+      email: emp.email,
+      role: emp.role || 'employee'
+    });
     res.json({ token, employee: shape(emp) });
   } catch (error) {
     res.status(500).json({ error: 'Authentication failed', message: error.message });

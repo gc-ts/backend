@@ -4,6 +4,10 @@ import {
   searchKnowledge,
   ingestStartupDocuments
 } from '../services/knowledge.js';
+import {
+  getCorporatePortalSyncState,
+  syncCorporatePortalData
+} from '../services/corporatePortal.js';
 import * as store from '../services/vectorStore.js';
 import { authMiddleware, requireAdmin } from '../services/auth.js';
 
@@ -64,6 +68,27 @@ router.post('/reindex', requireAdmin, async (_req, res) => {
   } catch (error) {
     res.status(500).json({ error: 'Reindex failed', message: error.message });
   }
+});
+
+/**
+ * POST /api/knowledge/sync-corporate
+ * Принудительная синхронизация сотрудников и новостей с корпоративного портала.
+ */
+router.post('/sync-corporate', requireAdmin, async (_req, res) => {
+  try {
+    const result = await syncCorporatePortalData();
+    res.json({ message: 'Corporate portal sync done', ...result, total: store.getStats().total });
+  } catch (error) {
+    res.status(500).json({ error: 'Corporate portal sync failed', message: error.message });
+  }
+});
+
+/**
+ * GET /api/knowledge/corporate-sync
+ * Состояние расписания синхронизации корпоративного портала.
+ */
+router.get('/corporate-sync', requireAdmin, (_req, res) => {
+  res.json(getCorporatePortalSyncState());
 });
 
 /**

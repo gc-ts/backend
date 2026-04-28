@@ -54,6 +54,15 @@ export const initDatabase = async () => {
   await query(`CREATE INDEX IF NOT EXISTS idx_employees_employee_id ON employees(employee_id)`);
   await query(`CREATE INDEX IF NOT EXISTS idx_employees_email ON employees(email)`);
   await query(`ALTER TABLE employees ADD COLUMN IF NOT EXISTS role VARCHAR(32) NOT NULL DEFAULT 'employee'`);
+  await query(`ALTER TABLE employees ADD COLUMN IF NOT EXISTS salary NUMERIC(12,2)`);
+  await query(`ALTER TABLE employees ADD COLUMN IF NOT EXISTS bonus_balance INTEGER DEFAULT 0`);
+  await query(`ALTER TABLE employees ADD COLUMN IF NOT EXISTS middle_name VARCHAR(255)`);
+  await query(`ALTER TABLE employees ADD COLUMN IF NOT EXISTS city VARCHAR(255)`);
+  await query(`ALTER TABLE employees ADD COLUMN IF NOT EXISTS telegram VARCHAR(255)`);
+  await query(`ALTER TABLE employees ADD COLUMN IF NOT EXISTS additional_email VARCHAR(255)`);
+  await query(`ALTER TABLE employees ADD COLUMN IF NOT EXISTS one_c_code VARCHAR(64)`);
+  await query(`ALTER TABLE employees ADD COLUMN IF NOT EXISTS medical_exam_date DATE`);
+  await query(`ALTER TABLE employees ADD COLUMN IF NOT EXISTS sanitary_minimum_date DATE`);
 
   await query(`
     CREATE TABLE IF NOT EXISTS vacations (
@@ -113,10 +122,44 @@ export const ensureAdminUser = async () => {
   console.log('👑 Admin user ensured (login: admin / password: admin)');
 };
 
+export const ensureMockEmployees = async () => {
+  const bcrypt = (await import('bcryptjs')).default;
+  const pwd = await bcrypt.hash('password123', 10);
+  const seed = [
+    ['12345', 'a.potapov@company.ru', 'Потапов Артем Павлович', 'Senior Developer', 'IT', '1990-05-20', '2020-01-15', '+7 (999) 123-45-67', 14, 150000, 12],
+    ['67890', 'm.ivanova@company.ru', 'Иванова Мария Сергеевна', 'HR Manager', 'HR', '1988-11-15', '2019-03-10', '+7 (999) 987-65-43', 21, 120000, 25],
+    ['11111', 'p.petrov@company.ru', 'Петров Петр Петрович', 'Team Lead', 'IT', '1985-03-25', '2018-06-01', '+7 (999) 111-22-33', 28, 200000, 40],
+    ['01234567891', 'hr@portal-test.1221systems.ru', 'HR Тестовый', 'HR', 'HR', '1989-04-12', '2025-01-29', null, 28, 130000, 1],
+    ['11111111111', 'nastyakisnik@gmail.com', 'Анастасия Тестовая', 'Сотрудник', 'Практика', '1997-09-18', '2026-03-17', null, 26, 90000, 1],
+    ['01234567892', 'dir@portal-test.1221systems.ru', 'Руководитель Тестовый', 'Руководитель', '1221 Systems', '1986-02-05', '2025-09-16', null, 20, 180000, 10],
+    ['01234567893', 'work@portal-test.1221systems.ru', 'Сотрудник Тестовый', 'Сотрудник', '1221 Systems', '1993-06-21', '2025-08-07', null, 18, 100000, 5],
+    ['01234567894', 'work1@portal-test.1221systems.ru', 'Сотрудник Тестовый 1', 'Сотрудник', '1221 Systems', '1994-10-03', '2026-02-19', null, 24, 100000, 5],
+    ['01234567898', 'email@mailmail.ruru', 'РАЗРАБОТЧИК ГЛАВНЫЙ', 'Главный разработчик', 'Разработка', '1990-12-11', '2026-04-28', null, 28, 170000, 0],
+    ['08336732477', 'dsjnjsdnf@fksdj.com', 'УКЛТПЫААИТВАЛМЬ', 'Сотрудник', 'Не указано', '1998-01-30', '2026-04-28', null, 28, 80000, 0]
+  ];
+
+  for (const e of seed) {
+    await query(
+      `INSERT INTO employees
+       (employee_id, email, password_hash, full_name, position, department, birth_date, hire_date, phone, vacation_days, salary, bonus_balance)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+       ON CONFLICT (employee_id) DO UPDATE SET
+         salary = COALESCE(employees.salary, EXCLUDED.salary),
+         bonus_balance = COALESCE(employees.bonus_balance, EXCLUDED.bonus_balance),
+         birth_date = COALESCE(employees.birth_date, EXCLUDED.birth_date),
+         hire_date = COALESCE(employees.hire_date, EXCLUDED.hire_date),
+         vacation_days = COALESCE(employees.vacation_days, EXCLUDED.vacation_days),
+         updated_at = CURRENT_TIMESTAMP`,
+      [e[0], e[1], pwd, e[2], e[3], e[4], e[5], e[6], e[7], e[8], e[9], e[10]]
+    );
+  }
+};
+
 export const seedDatabase = async () => {
   // Идемпотентный seed: только если таблица пуста
   const r = await query(`SELECT COUNT(*)::int AS n FROM employees`);
   if (r.rows[0].n > 0) {
+    await ensureMockEmployees();
     await ensureAdminUser();
     return;
   }
@@ -126,15 +169,24 @@ export const seedDatabase = async () => {
   const pwd = await bcrypt.hash('password123', 10);
 
   const seed = [
-    ['12345', 'a.potapov@company.ru', 'Потапов Артем Павлович', 'Senior Developer', 'IT', '1990-05-20', '2020-01-15', '+7 (999) 123-45-67', 14],
-    ['67890', 'm.ivanova@company.ru', 'Иванова Мария Сергеевна', 'HR Manager', 'HR', '1988-11-15', '2019-03-10', '+7 (999) 987-65-43', 21],
-    ['11111', 'p.petrov@company.ru', 'Петров Петр Петрович', 'Team Lead', 'IT', '1985-03-25', '2018-06-01', '+7 (999) 111-22-33', 28]
+    ['12345', 'a.potapov@company.ru', 'Потапов Артем Павлович', 'Senior Developer', 'IT', '1990-05-20', '2020-01-15', '+7 (999) 123-45-67', 14, 150000, 12],
+    ['67890', 'm.ivanova@company.ru', 'Иванова Мария Сергеевна', 'HR Manager', 'HR', '1988-11-15', '2019-03-10', '+7 (999) 987-65-43', 21, 120000, 25],
+    ['11111', 'p.petrov@company.ru', 'Петров Петр Петрович', 'Team Lead', 'IT', '1985-03-25', '2018-06-01', '+7 (999) 111-22-33', 28, 200000, 40],
+    ['01234567891', 'hr@portal-test.1221systems.ru', 'HR Тестовый', 'HR', 'HR', '1989-04-12', '2025-01-29', null, 28, 130000, 1],
+    ['11111111111', 'nastyakisnik@gmail.com', 'Анастасия Тестовая', 'Сотрудник', 'Практика', '1997-09-18', '2026-03-17', null, 26, 90000, 1],
+    ['01234567892', 'dir@portal-test.1221systems.ru', 'Руководитель Тестовый', 'Руководитель', '1221 Systems', '1986-02-05', '2025-09-16', null, 20, 180000, 10],
+    ['01234567893', 'work@portal-test.1221systems.ru', 'Сотрудник Тестовый', 'Сотрудник', '1221 Systems', '1993-06-21', '2025-08-07', null, 18, 100000, 5],
+    ['01234567894', 'work1@portal-test.1221systems.ru', 'Сотрудник Тестовый 1', 'Сотрудник', '1221 Systems', '1994-10-03', '2026-02-19', null, 24, 100000, 5],
+    ['01234567898', 'email@mailmail.ruru', 'РАЗРАБОТЧИК ГЛАВНЫЙ', 'Главный разработчик', 'Разработка', '1990-12-11', '2026-04-28', null, 28, 170000, 0],
+    ['08336732477', 'dsjnjsdnf@fksdj.com', 'УКЛТПЫААИТВАЛМЬ', 'Сотрудник', 'Не указано', '1998-01-30', '2026-04-28', null, 28, 80000, 0]
   ];
   for (const e of seed) {
     await query(
-      `INSERT INTO employees (employee_id, email, password_hash, full_name, position, department, birth_date, hire_date, phone, vacation_days)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT (employee_id) DO NOTHING`,
-      [e[0], e[1], pwd, e[2], e[3], e[4], e[5], e[6], e[7], e[8]]
+      `INSERT INTO employees
+       (employee_id, email, password_hash, full_name, position, department, birth_date, hire_date, phone, vacation_days, salary, bonus_balance)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+       ON CONFLICT (employee_id) DO NOTHING`,
+      [e[0], e[1], pwd, e[2], e[3], e[4], e[5], e[6], e[7], e[8], e[9], e[10]]
     );
   }
 
@@ -150,6 +202,7 @@ export const seedDatabase = async () => {
   );
 
   console.log('🌱 Database seeded with sample employees / vacations (password: password123)');
+  await ensureMockEmployees();
   await ensureAdminUser();
 };
 

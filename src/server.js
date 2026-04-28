@@ -9,6 +9,7 @@ import YAML from 'yaml';
 import { initDatabase, seedDatabase, checkConnection } from './config/database.js';
 import { checkOllamaHealth } from './services/ollama.js';
 import { ingestStartupDocuments } from './services/knowledge.js';
+import { scheduleCorporatePortalSync, syncCorporatePortalData } from './services/corporatePortal.js';
 import * as store from './services/vectorStore.js';
 import authRoutes from './routes/auth.js';
 import chatRoutes from './routes/chat.js';
@@ -112,8 +113,22 @@ const startServer = async () => {
         } catch (e) {
           console.error('Ingestion failed:', e.message);
         }
+
+        if (String(process.env.WP_SYNC_ON_START || 'false') === 'true') {
+          console.log('🏢 Запускаю первичную синхронизацию корпоративного портала…');
+          try {
+            const result = await syncCorporatePortalData();
+            if (result.skipped) {
+              console.warn(`🏢 Первичная синхронизация пропущена: ${result.reason}`);
+            }
+          } catch (e) {
+            console.error('Corporate portal startup sync failed:', e.message);
+          }
+        }
       }
     }
+
+    scheduleCorporatePortalSync();
 
     app.listen(PORT, HOST, () => {
       console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');

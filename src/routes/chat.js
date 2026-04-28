@@ -11,10 +11,10 @@ router.use(authMiddleware);
 const HR_FALLBACK_HINT =
   '\n\nЕсли вам нужна точная информация — напишите в отдел кадров: hr@company.ru, +7 (495) 123-45-67.';
 
-async function getEmployeeContext(employeeId) {
-  if (!employeeId) return null;
+async function getEmployeeContext({ employeeId, email }) {
+  if (!employeeId && !email) return null;
   try {
-    return await findEmployee({ employeeId });
+    return await findEmployee({ employeeId, email });
   } catch {
     return null;
   }
@@ -57,28 +57,30 @@ router.post('/message', async (req, res) => {
   try {
     const { message } = req.body;
     // Админ может явно указать employeeId в body, обычный юзер — только себя
-    const employeeId =
-      req.user.role === 'admin' && req.body.employeeId
-        ? req.body.employeeId
-        : req.user.employeeId;
+    const employeeLookup =
+      req.user.role === 'admin'
+        ? { employeeId: req.body.employeeId || req.user.employeeId, email: req.body.email }
+        : { employeeId: req.user.employeeId, email: req.user.email };
     if (!message) return res.status(400).json({ error: 'Message is required' });
 
     const [employee, history, knowledge] = await Promise.all([
-      getEmployeeContext(employeeId),
-      getRecentHistory(employeeId),
+      getEmployeeContext(employeeLookup),
+      getRecentHistory(employeeLookup.employeeId),
       searchKnowledge(message)
     ]);
 
     const context = knowledge?.content || '';
-    const source = knowledge?.source || null;
+    const source = [employee ? 'ДАННЫЕ СОТРУДНИКА' : null, knowledge?.source || null]
+      .filter(Boolean)
+      .join('; ') || null;
     const hits = knowledge?.hits || [];
 
     let answer = await generateResponse(message, context, employee, history);
     if (!knowledge) answer += HR_FALLBACK_HINT;
 
     // Async persist (fire-and-forget)
-    persistMessage(employeeId, 'user', message);
-    persistMessage(employeeId, 'assistant', answer);
+    persistMessage(employee?.employee_id || employeeLookup.employeeId, 'user', message);
+    persistMessage(employee?.employee_id || employeeLookup.employeeId, 'assistant', answer);
 
     res.json({
       response: answer,
@@ -99,10 +101,10 @@ router.post('/message', async (req, res) => {
  */
 router.post('/stream', async (req, res) => {
   const { message } = req.body;
-  const employeeId =
-    req.user.role === 'admin' && req.body.employeeId
-      ? req.body.employeeId
-      : req.user.employeeId;
+  const employeeLookup =
+    req.user.role === 'admin'
+      ? { employeeId: req.body.employeeId || req.user.employeeId, email: req.body.email }
+      : { employeeId: req.user.employeeId, email: req.user.email };
   if (!message) return res.status(400).json({ error: 'Message is required' });
 
   res.setHeader('Content-Type', 'text/event-stream');
@@ -115,14 +117,16 @@ router.post('/stream', async (req, res) => {
 
   try {
     const [employee, history, knowledge] = await Promise.all([
-      getEmployeeContext(employeeId),
-      getRecentHistory(employeeId),
+      getEmployeeContext(employeeLookup),
+      getRecentHistory(employeeLookup.employeeId),
       searchKnowledge(message)
     ]);
 
     send({
       type: 'context',
-      source: knowledge?.source || null,
+      source: [employee ? 'ДАННЫЕ СОТРУДНИКА' : null, knowledge?.source || null]
+        .filter(Boolean)
+        .join('; ') || null,
       hits: (knowledge?.hits || []).map((h) => ({
         score: h.score,
         doc: h.docTitle,
@@ -146,8 +150,8 @@ router.post('/stream', async (req, res) => {
       send({ type: 'token', delta: HR_FALLBACK_HINT });
     }
 
-    persistMessage(employeeId, 'user', message);
-    persistMessage(employeeId, 'assistant', full);
+    persistMessage(employee?.employee_id || employeeLookup.employeeId, 'user', message);
+    persistMessage(employee?.employee_id || employeeLookup.employeeId, 'assistant', full);
 
     send({ type: 'done' });
     res.end();

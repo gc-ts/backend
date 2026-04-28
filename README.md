@@ -56,9 +56,15 @@
 | Векторное хранилище | In-process cosine search, persist в `data/vector-index.json` |
 | База данных | PostgreSQL 14+ (сотрудники, отпуска, история чата, документы) |
 | Парсинг документов | `pdf-parse`, `mammoth` (PDF / DOCX / TXT / MD) |
+<<<<<<< HEAD
 | Аутентификация | bcryptjs + JWT (jsonwebtoken) |
 | Загрузка файлов | Multer |
 | Документация API | OpenAPI 3.0 + Swagger UI Express |
+=======
+| Корпоративные данные | WordPress REST API (`users`, `posts`) с ежедневной индексацией |
+| Auth | bcryptjs + JWT |
+| Документация API | OpenAPI 3.0 + Swagger UI на `/docs` |
+>>>>>>> b937773 (Added a sync with WP corp portal. Added some mock data like salary or birthday. New endpoints for admin)
 
 ## Архитектура запроса в чат
 
@@ -174,6 +180,12 @@ npm start      # прод
 | `RAG_CHUNK_SIZE` / `RAG_CHUNK_OVERLAP` | `900` / `150` | Параметры чанкера |
 | `RAG_DOCS_DIR` | `./data/docs` | Папка-источник документов |
 | `RAG_INDEX_PATH` | `./data/vector-index.json` | Куда писать индекс |
+| `WP_URL` | — | URL корпоративного WordPress-портала, например `https://portal-test.1221systems.ru` |
+| `WP_USER` / `WP_APP_PASS` | — | Пользователь и application password WordPress REST API |
+| `WP_SYNC_HOUR_MSK` / `WP_SYNC_MINUTE_MSK` | `18` / `0` | Ежедневное обновление корпоративных данных по московскому времени |
+| `WP_SYNC_ON_START` | `false` | Запустить синхронизацию WordPress сразу при старте сервера |
+| `WP_ALLOW_INSECURE_TLS` | `true` | Разрешить тестовый TLS-сертификат, аналогично `curl -k` |
+| `WP_USERS_FIELDS` / `WP_POSTS_FIELDS` | см. код | Переопределение `_fields`, если на портале есть кастомные поля (`meta`, `acf`, дата рождения и т.п.) |
 | `MAX_FILE_SIZE` | `20971520` (20 MB) | Лимит загрузки |
 | `CORS_ORIGIN` | `*` | CORS |
 
@@ -202,12 +214,19 @@ npm start      # прод
 | GET  | `/api/employee/:id/birthday` | День рождения и возраст |
 | GET  | `/api/employee/search/by-name?name=` | Поиск по ФИО |
 | POST | `/api/employee/auth` | Лёгкая идентификация (без пароля) |
+| GET  | `/api/employee/admin/list` | Admin: список редактируемых mock-карточек сотрудников |
+| POST | `/api/employee/admin` | Admin: создать mock-карточку сотрудника |
+| PUT  | `/api/employee/admin/:id` | Admin: обновить персональные данные сотрудника |
+| POST | `/api/employee/admin/:id/vacations` | Admin: добавить плановый отпуск |
+| DELETE | `/api/employee/admin/:id` | Admin: удалить mock-карточку сотрудника |
 | GET  | `/api/documents` | Список документов (RAG + БД) |
 | POST | `/api/documents/upload` | Загрузка + авто-индексация |
 | DELETE | `/api/documents/:id` | Удаление + удаление чанков |
 | GET  | `/api/documents/meta/categories` | Список категорий |
 | POST | `/api/knowledge/search` | Поиск по KB (вектор + keyword) |
 | POST | `/api/knowledge/reindex` | Принудительная переиндексация |
+| GET  | `/api/knowledge/corporate-sync` | Состояние расписания синхронизации WordPress |
+| POST | `/api/knowledge/sync-corporate` | Принудительная синхронизация WordPress |
 | GET  | `/api/knowledge/index` | Статистика индекса |
 
 ### Примеры
@@ -220,6 +239,17 @@ curl http://localhost:3000/health | jq
 curl -X POST http://localhost:3000/api/chat/message \
   -H "Content-Type: application/json" \
   -d '{"message":"Сколько у меня дней отпуска?","employeeId":"12345"}' | jq
+
+# Лёгкая идентификация по табельному номеру или email возвращает JWT для чата
+curl -X POST http://localhost:3000/api/employee/auth \
+  -H "Content-Type: application/json" \
+  -d '{"employeeId":"11111111111"}' | jq
+
+# Admin: обновить mock-данные сотрудника
+curl -X PUT http://localhost:3000/api/employee/admin/11111111111 \
+  -H "Authorization: Bearer <admin-jwt>" \
+  -H "Content-Type: application/json" \
+  -d '{"vacationDays":27,"salary":91000,"birthDate":"1997-09-18"}' | jq
 
 # Стриминг (SSE)
 curl -N -X POST http://localhost:3000/api/chat/stream \
@@ -237,6 +267,10 @@ curl -X POST http://localhost:3000/api/documents/upload \
 curl -X POST http://localhost:3000/api/knowledge/search \
   -H "Content-Type: application/json" \
   -d '{"query":"перенос отпуска","topK":6}' | jq
+
+# Принудительно подтянуть сотрудников и новости с корпоративного портала
+curl -X POST http://localhost:3000/api/knowledge/sync-corporate \
+  -H "Authorization: Bearer <admin-jwt>" | jq
 ```
 
 ### Ответ чата (структура)

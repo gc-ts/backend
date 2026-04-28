@@ -45,6 +45,8 @@ info:
     | `GET  /api/knowledge/index`           |  ❌    |  ✅                      |  ✅    |
     | `POST /api/knowledge/search`          |  ❌    |  ✅                      |  ✅    |
     | `POST /api/knowledge/reindex`         |  ❌    |  ❌ (403)               |  ✅ (admin only) |
+    | `GET  /api/knowledge/corporate-sync`  |  ❌    |  ❌ (403)               |  ✅ (admin only) |
+    | `POST /api/knowledge/sync-corporate`  |  ❌    |  ❌ (403)               |  ✅ (admin only) |
 
     Возможности:
       * Идентификация сотрудника по табельному номеру / e-mail.
@@ -595,6 +597,51 @@ paths:
                   indexed:  { type: integer }
                   chunks:   { type: integer }
                   total:    { type: integer }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+
+  /api/knowledge/sync-corporate:
+    post:
+      tags: [Knowledge]
+      summary: Принудительная синхронизация WordPress-портала — admin only
+      description: "**Только admin.** Подтягивает сотрудников и записи портала, затем обновляет RAG-индекс."
+      responses:
+        "200":
+          description: Готово
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:  { type: string }
+                  skipped:  { type: boolean }
+                  reason:   { type: string }
+                  users:    { type: integer }
+                  posts:    { type: integer }
+                  chunks:   { type: integer }
+                  lastSync: { type: string, format: date-time }
+                  total:    { type: integer }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+
+  /api/knowledge/corporate-sync:
+    get:
+      tags: [Knowledge]
+      summary: Состояние расписания синхронизации WordPress-портала — admin only
+      description: "**Только admin.** Возвращает настройку, статус выполнения и ближайшее обновление."
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  configured: { type: boolean }
+                  running:    { type: boolean }
+                  lastSync:   { type: string, nullable: true }
+                  nextSync:   { type: string, nullable: true }
+                  schedule:   { type: string, example: "18:00 Europe/Moscow" }
         "401": { $ref: "#/components/responses/Error" }
         "403": { $ref: "#/components/responses/Error" }
 
