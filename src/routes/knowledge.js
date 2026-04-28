@@ -5,8 +5,10 @@ import {
   ingestStartupDocuments
 } from '../services/knowledge.js';
 import * as store from '../services/vectorStore.js';
+import { authMiddleware, requireAdmin } from '../services/auth.js';
 
 const router = express.Router();
+router.use(authMiddleware);
 
 /**
  * GET /api/knowledge
@@ -55,7 +57,7 @@ router.post('/search', async (req, res) => {
  * POST /api/knowledge/reindex
  * Принудительная переиндексация папки RAG_DOCS_DIR.
  */
-router.post('/reindex', async (_req, res) => {
+router.post('/reindex', requireAdmin, async (_req, res) => {
   try {
     const result = await ingestStartupDocuments();
     res.json({ message: 'Reindex done', ...result, total: store.getStats().total });

@@ -1,12 +1,50 @@
 openapi: 3.0.3
 info:
   title: HR Agent AI — Backend API
-  version: "1.0.0"
+  version: "1.1.0"
   description: |
     Backend для AI-ассистента «Техна» по HR-вопросам компании 1221 Системс.
     Полностью локальная архитектура: Node.js/Express + PostgreSQL + Ollama
     (qwen2.5:32b для генерации, bge-m3 для эмбеддингов) + локальный
     RAG-индекс по ЛНА (ПВТР, положения, инструкции).
+
+    ## Аутентификация и роли
+
+    Все защищённые эндпоинты принимают JWT в заголовке `Authorization: Bearer <token>`.
+    JWT выдаётся `POST /api/auth/login` и содержит поле `role`:
+      * `employee` — обычный сотрудник;
+      * `admin` — администратор.
+
+    Тестовые учётки:
+      * `admin / admin` — администратор;
+      * `12345 / password123` (Потапов), `67890 / password123` (Иванова),
+        `11111 / password123` (Петров) — обычные сотрудники.
+
+    ## Матрица доступа
+
+    | Эндпоинт                              | Аноним | Сотрудник                | Админ |
+    | ------------------------------------- | ------ | ------------------------ | ----- |
+    | `GET  /health`                        |  ✅    |  ✅                      |  ✅    |
+    | `POST /api/auth/register`             |  ✅    |  ✅                      |  ✅    |
+    | `POST /api/auth/login`                |  ✅    |  ✅                      |  ✅    |
+    | `POST /api/auth/verify`               |  ❌    |  ✅                      |  ✅    |
+    | `POST /api/employee/auth`             |  ✅    |  ✅                      |  ✅    |
+    | `GET  /api/employee/{id}`             |  ❌    |  только свой `id`        |  любой `id` |
+    | `GET  /api/employee/{id}/vacation`    |  ❌    |  только свой `id`        |  любой `id` |
+    | `GET  /api/employee/{id}/birthday`    |  ❌    |  только свой `id`        |  любой `id` |
+    | `GET  /api/employee/search/by-name`   |  ❌    |  ✅                      |  ✅    |
+    | `POST /api/chat/message`              |  ❌    |  ✅ (от своего имени)    |  ✅ (можно указать `employeeId`) |
+    | `POST /api/chat/stream`                |  ❌    |  ✅ (от своего имени)    |  ✅ (можно указать `employeeId`) |
+    | `GET  /api/chat/history/{employeeId}` |  ❌    |  только свой `employeeId`|  любой `employeeId` |
+    | `GET  /api/documents`                 |  ❌    |  ✅                      |  ✅    |
+    | `GET  /api/documents/{id}`            |  ❌    |  ✅                      |  ✅    |
+    | `GET  /api/documents/meta/categories` |  ❌    |  ✅                      |  ✅    |
+    | `POST /api/documents/upload`          |  ❌    |  ❌ (403)               |  ✅ (admin only) |
+    | `DELETE /api/documents/{id}`          |  ❌    |  ❌ (403)               |  ✅ (admin only) |
+    | `GET  /api/knowledge`                 |  ❌    |  ✅                      |  ✅    |
+    | `GET  /api/knowledge/index`           |  ❌    |  ✅                      |  ✅    |
+    | `POST /api/knowledge/search`          |  ❌    |  ✅                      |  ✅    |
+    | `POST /api/knowledge/reindex`         |  ❌    |  ❌ (403)               |  ✅ (admin only) |
 
     Возможности:
       * Идентификация сотрудника по табельному номеру / e-mail.
@@ -26,17 +64,33 @@ servers:
 
 tags:
   - name: System
+    description: Здоровье сервиса. Без авторизации.
   - name: Auth
+    description: Регистрация, логин (выдача JWT), проверка токена.
   - name: Chat
+    description: |
+      Все эндпоинты требуют JWT. `employeeId` для обычного юзера всегда берётся
+      из токена; админ может явно указать чужой `employeeId` в body/URL.
   - name: Employee
+    description: |
+      Все эндпоинты `/{id}` доступны только владельцу записи.
+      Админ имеет доступ к любому `id` без 403.
   - name: Documents
+    description: |
+      Чтение доступно любому авторизованному. Загрузка и удаление — только админ.
   - name: Knowledge
+    description: |
+      Поиск и просмотр индекса — любой авторизованный. Переиндексация — только админ.
+
+security:
+  - bearerAuth: []
 
 paths:
   /health:
     get:
       tags: [System]
       summary: Состояние сервиса, Ollama и RAG-индекса
+      security: []
       responses:
         "200":
           description: OK / degraded
@@ -49,6 +103,10 @@ paths:
     post:
       tags: [Auth]
       summary: Регистрация сотрудника (с паролем)
+      description: |
+        Публичный. Создаёт обычного сотрудника (`role = employee`).
+        Создание администраторов через этот эндпоинт не предусмотрено.
+      security: []
       requestBody:
         required: true
         content:
@@ -72,6 +130,13 @@ paths:
     post:
       tags: [Auth]
       summary: Логин по e-mail/табельному + пароль (выдаёт JWT)
+      description: |
+        Публичный. Возвращает JWT с полями `id`, `employeeId`, `email`, `role`.
+
+        Тестовые логины:
+          * `admin / admin` → role = `admin`
+          * `12345 / password123` → role = `employee`
+      security: []
       requestBody:
         required: true
         content:
@@ -80,8 +145,15 @@ paths:
               type: object
               required: [login, password]
               properties:
-                login: { type: string, example: "12345" }
-                password: { type: string, example: "password123" }
+                login: { type: string, example: "admin" }
+                password: { type: string, example: "admin" }
+            examples:
+              admin:
+                summary: Админ
+                value: { login: "admin", password: "admin" }
+              employee:
+                summary: Обычный сотрудник
+                value: { login: "12345", password: "password123" }
       responses:
         "200":
           description: OK
@@ -99,7 +171,7 @@ paths:
     post:
       tags: [Auth]
       summary: Проверка JWT-токена
-      security: [{ bearerAuth: [] }]
+      description: Требует валидный JWT. Возвращает декодированный payload.
       responses:
         "200":
           description: Токен валиден
@@ -109,7 +181,13 @@ paths:
                 type: object
                 properties:
                   valid: { type: boolean }
-                  user: { type: object }
+                  user:
+                    type: object
+                    properties:
+                      id:         { type: integer }
+                      employeeId: { type: string }
+                      email:      { type: string }
+                      role:       { type: string, enum: [employee, admin] }
         "401":
           $ref: "#/components/responses/Error"
 
@@ -118,9 +196,15 @@ paths:
       tags: [Chat]
       summary: Задать вопрос ассистенту (синхронный ответ)
       description: |
+        **Требует JWT.**
+
         Извлекает релевантные фрагменты из RAG, подмешивает данные сотрудника
-        и историю диалога, генерирует ответ на qwen2.5:32b. В ответе всегда
-        указывается источник (документ + пункт ЛНА).
+        и историю диалога, генерирует ответ на qwen2.5:32b.
+
+        * **Сотрудник:** `employeeId` всегда берётся из токена, поле `employeeId`
+          в body **игнорируется**. Чат ведётся от имени самого пользователя.
+        * **Админ:** может передать `employeeId` в body и задавать вопросы
+          «от имени» этого сотрудника (история и контекст подтянутся для него).
       requestBody:
         required: true
         content:
@@ -129,18 +213,14 @@ paths:
               $ref: "#/components/schemas/ChatRequest"
             examples:
               vacation:
-                summary: «Сколько у меня дней отпуска?»
+                summary: «Сколько у меня дней отпуска?» (любой авторизованный)
                 value:
                   message: "Сколько у меня осталось дней отпуска?"
+              admin_for_user:
+                summary: Админ задаёт вопрос от имени сотрудника 12345
+                value:
+                  message: "Какой у меня график отпусков?"
                   employeeId: "12345"
-              salary:
-                summary: «Когда аванс?»
-                value:
-                  message: "Когда выплачивается аванс?"
-              dms:
-                summary: «Какие программы ДМС есть?»
-                value:
-                  message: "Какие программы ДМС у нас есть?"
       responses:
         "200":
           description: OK
@@ -148,18 +228,19 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ChatResponse"
-        "400":
-          $ref: "#/components/responses/Error"
-        "500":
-          $ref: "#/components/responses/Error"
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
 
   /api/chat/stream:
     post:
       tags: [Chat]
       summary: Тот же ответ, но потоком через Server-Sent Events
       description: |
-        Возвращает поток `text/event-stream`. Тело каждого события — JSON одного
-        из видов:
+        **Требует JWT.** Те же правила по `employeeId`, что и `/api/chat/message`:
+        обычный юзер пишет от себя, админ может указать `employeeId` в body.
+
+        Возвращает поток `text/event-stream`. Тело каждого события — JSON одного из видов:
           * `{"type":"context","source":"...","hits":[...]}` — однократно в начале
           * `{"type":"token","delta":"..."}` — токены ответа
           * `{"type":"done"}` — конец стрима
@@ -185,13 +266,17 @@ paths:
                   data: {"type":"token","delta":"14 дней."}
 
                   data: {"type":"done"}
-        "400":
-          $ref: "#/components/responses/Error"
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
 
   /api/chat/history/{employeeId}:
     get:
       tags: [Chat]
       summary: История чата сотрудника
+      description: |
+        **Требует JWT.**
+        * Сотрудник: только свой `employeeId`, иначе 403.
+        * Админ: любой `employeeId`.
       parameters:
         - $ref: "#/components/parameters/EmployeeId"
       responses:
@@ -206,11 +291,17 @@ paths:
                     type: array
                     items:
                       $ref: "#/components/schemas/ChatHistoryItem"
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
 
   /api/employee/{id}:
     get:
       tags: [Employee]
       summary: Карточка сотрудника по табельному номеру
+      description: |
+        **Требует JWT.**
+        * Сотрудник: разрешён только свой `id` (иначе 403).
+        * Админ: любой `id`.
       parameters:
         - $ref: "#/components/parameters/EmployeeId"
       responses:
@@ -220,13 +311,18 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/EmployeePublic"
-        "404":
-          $ref: "#/components/responses/Error"
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
 
   /api/employee/{id}/vacation:
     get:
       tags: [Employee]
       summary: Остаток отпуска и график
+      description: |
+        **Требует JWT.**
+        * Сотрудник: только свой `id`.
+        * Админ: любой `id`.
       parameters:
         - $ref: "#/components/parameters/EmployeeId"
       responses:
@@ -236,11 +332,17 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/VacationInfo"
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
 
   /api/employee/{id}/birthday:
     get:
       tags: [Employee]
       summary: Дата рождения и возраст
+      description: |
+        **Требует JWT.**
+        * Сотрудник: только свой `id`.
+        * Админ: любой `id`.
       parameters:
         - $ref: "#/components/parameters/EmployeeId"
       responses:
@@ -253,11 +355,18 @@ paths:
                 properties:
                   birthDate: { type: string, format: date, nullable: true }
                   age: { type: integer, nullable: true }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
 
   /api/employee/auth:
     post:
       tags: [Employee]
       summary: Лёгкая идентификация по табельному/e-mail (без пароля)
+      description: |
+        Публичный, без JWT. Возвращает opaque-токен (не JWT) для UX-сценария
+        «вспомнить пользователя на этом устройстве». Никаких прав не выдаёт —
+        для боевых вызовов используйте `POST /api/auth/login`.
+      security: []
       requestBody:
         required: true
         content:
@@ -277,13 +386,15 @@ paths:
                 properties:
                   token: { type: string }
                   employee: { $ref: "#/components/schemas/EmployeePublic" }
-        "404":
-          $ref: "#/components/responses/Error"
+        "404": { $ref: "#/components/responses/Error" }
 
   /api/employee/search/by-name:
     get:
       tags: [Employee]
-      summary: Поиск сотрудника по ФИО (для вопросов «когда день рождения <имя>»)
+      summary: Поиск сотрудника по ФИО
+      description: |
+        **Требует JWT** (любая роль). Используется для вопросов вида
+        «когда день рождения <имя коллеги>». Не отдаёт паролей/zarplata-полей.
       parameters:
         - in: query
           name: name
@@ -301,11 +412,13 @@ paths:
                   results:
                     type: array
                     items: { $ref: "#/components/schemas/EmployeePublic" }
+        "401": { $ref: "#/components/responses/Error" }
 
   /api/documents:
     get:
       tags: [Documents]
       summary: Список документов
+      description: "**Требует JWT** (любая роль)."
       parameters:
         - in: query
           name: category
@@ -324,11 +437,13 @@ paths:
                   documents:
                     type: array
                     items: { $ref: "#/components/schemas/Document" }
+        "401": { $ref: "#/components/responses/Error" }
 
   /api/documents/{id}:
     get:
       tags: [Documents]
       summary: Документ по id
+      description: "**Требует JWT** (любая роль)."
       parameters:
         - in: path
           name: id
@@ -340,11 +455,12 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Document" }
-        "404":
-          $ref: "#/components/responses/Error"
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
     delete:
       tags: [Documents]
-      summary: Удалить документ (вместе с чанками RAG)
+      summary: Удалить документ (вместе с чанками RAG) — admin only
+      description: "**Только admin.** Обычный сотрудник получит 403."
       parameters:
         - in: path
           name: id
@@ -360,11 +476,16 @@ paths:
                 properties:
                   message: { type: string }
                   removedChunks: { type: integer }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
 
   /api/documents/upload:
     post:
       tags: [Documents]
-      summary: Загрузка нового документа (PDF/DOCX/TXT/MD) — авто-индексация в RAG
+      summary: Загрузка нового документа (PDF/DOCX/TXT/MD) — admin only
+      description: |
+        **Только admin.** Загружает файл, парсит, индексирует в RAG и сохраняет
+        метаданные в БД. Обычный сотрудник получит 403.
       requestBody:
         required: true
         content:
@@ -391,11 +512,14 @@ paths:
                     properties:
                       chunkCount: { type: integer, example: 17 }
                       message:    { type: string }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
 
   /api/documents/meta/categories:
     get:
       tags: [Documents]
       summary: Список категорий
+      description: "**Требует JWT** (любая роль)."
       responses:
         "200":
           description: OK
@@ -407,19 +531,23 @@ paths:
                   categories:
                     type: array
                     items: { type: string }
+        "401": { $ref: "#/components/responses/Error" }
 
   /api/knowledge:
     get:
       tags: [Knowledge]
       summary: Базовая «быстрая» KB + статистика RAG-индекса
+      description: "**Требует JWT** (любая роль)."
       responses:
         "200":
           description: OK
+        "401": { $ref: "#/components/responses/Error" }
 
   /api/knowledge/search:
     post:
       tags: [Knowledge]
       summary: Поиск по базе знаний (вектор + keyword fallback)
+      description: "**Требует JWT** (любая роль)."
       requestBody:
         required: true
         content:
@@ -448,11 +576,13 @@ paths:
                   hits:
                     type: array
                     items: { $ref: "#/components/schemas/RagHit" }
+        "401": { $ref: "#/components/responses/Error" }
 
   /api/knowledge/reindex:
     post:
       tags: [Knowledge]
-      summary: Принудительная переиндексация папки RAG_DOCS_DIR
+      summary: Принудительная переиндексация папки RAG_DOCS_DIR — admin only
+      description: "**Только admin.** Обычный сотрудник получит 403."
       responses:
         "200":
           description: Готово
@@ -465,11 +595,14 @@ paths:
                   indexed:  { type: integer }
                   chunks:   { type: integer }
                   total:    { type: integer }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
 
   /api/knowledge/index:
     get:
       tags: [Knowledge]
       summary: Состояние векторного индекса
+      description: "**Требует JWT** (любая роль)."
       responses:
         "200":
           description: OK
@@ -496,6 +629,7 @@ paths:
                         category:   { type: string }
                         sourcePath: { type: string }
                         chunkCount: { type: integer }
+        "401": { $ref: "#/components/responses/Error" }
 
 components:
   securitySchemes:
@@ -511,6 +645,9 @@ components:
       required: true
       schema: { type: string }
       example: "12345"
+      description: |
+        Табельный номер. Обычный сотрудник может указывать только собственный
+        `employeeId` (иначе 403). Админ — любой существующий.
 
   responses:
     Error:
@@ -579,6 +716,7 @@ components:
         hire_date:    { type: string, format: date, nullable: true }
         phone:        { type: string, nullable: true }
         vacation_days:{ type: integer }
+        role:         { type: string, enum: [employee, admin], example: "employee" }
         created_at:   { type: string, format: date-time }
 
     EmployeePublic:
@@ -616,7 +754,12 @@ components:
       required: [message]
       properties:
         message:    { type: string, example: "Сколько у меня осталось дней отпуска?" }
-        employeeId: { type: string, example: "12345" }
+        employeeId:
+          type: string
+          example: "12345"
+          description: |
+            Игнорируется для обычного сотрудника (`employeeId` всегда берётся из JWT).
+            Админ может указать чужой `employeeId`, чтобы вести чат от имени сотрудника.
 
     RagHit:
       type: object

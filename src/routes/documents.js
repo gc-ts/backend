@@ -5,8 +5,10 @@ import fs from 'fs';
 import { extractText, inferTitle } from '../services/docLoader.js';
 import * as store from '../services/vectorStore.js';
 import { query } from '../config/database.js';
+import { authMiddleware, requireAdmin } from '../services/auth.js';
 
 const router = express.Router();
+router.use(authMiddleware);
 
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
@@ -113,7 +115,7 @@ router.get('/:id', async (req, res) => {
  * multipart/form-data: file, title, category, type
  * Загружает файл, парсит, индексирует в RAG, сохраняет метаданные в БД.
  */
-router.post('/upload', upload.single('file'), async (req, res) => {
+router.post('/upload', requireAdmin, upload.single('file'), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
 
@@ -166,7 +168,7 @@ router.post('/upload', upload.single('file'), async (req, res) => {
   }
 });
 
-router.delete('/:id', async (req, res) => {
+router.delete('/:id', requireAdmin, async (req, res) => {
   try {
     const removed = store.removeDocument(req.params.id);
     if (req.params.id.startsWith('db-')) {

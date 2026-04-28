@@ -53,6 +53,7 @@ export const initDatabase = async () => {
   `);
   await query(`CREATE INDEX IF NOT EXISTS idx_employees_employee_id ON employees(employee_id)`);
   await query(`CREATE INDEX IF NOT EXISTS idx_employees_email ON employees(email)`);
+  await query(`ALTER TABLE employees ADD COLUMN IF NOT EXISTS role VARCHAR(32) NOT NULL DEFAULT 'employee'`);
 
   await query(`
     CREATE TABLE IF NOT EXISTS vacations (
@@ -93,10 +94,32 @@ export const initDatabase = async () => {
   console.log('✅ Database schema initialized');
 };
 
+export const ensureAdminUser = async () => {
+  // Идемпотентно: если admin уже есть — ничего не делаем.
+  const r = await query(`SELECT id FROM employees WHERE employee_id = 'admin' OR role = 'admin' LIMIT 1`);
+  if (r.rows.length > 0) {
+    // Подстраховка: если admin есть, но без роли — починим
+    await query(`UPDATE employees SET role = 'admin' WHERE employee_id = 'admin' AND role <> 'admin'`);
+    return;
+  }
+  const bcrypt = (await import('bcryptjs')).default;
+  const pwd = await bcrypt.hash('admin', 10);
+  await query(
+    `INSERT INTO employees (employee_id, email, password_hash, full_name, position, department, role)
+     VALUES ('admin', 'admin@company.ru', $1, 'Administrator', 'Administrator', 'IT', 'admin')
+     ON CONFLICT (employee_id) DO NOTHING`,
+    [pwd]
+  );
+  console.log('👑 Admin user ensured (login: admin / password: admin)');
+};
+
 export const seedDatabase = async () => {
   // Идемпотентный seed: только если таблица пуста
   const r = await query(`SELECT COUNT(*)::int AS n FROM employees`);
-  if (r.rows[0].n > 0) return;
+  if (r.rows[0].n > 0) {
+    await ensureAdminUser();
+    return;
+  }
 
   // bcrypt-хеш для пароля 'password123' (генерация на месте, чтобы хеш был валидным)
   const bcrypt = (await import('bcryptjs')).default;
@@ -127,6 +150,7 @@ export const seedDatabase = async () => {
   );
 
   console.log('🌱 Database seeded with sample employees / vacations (password: password123)');
+  await ensureAdminUser();
 };
 
 export const checkConnection = async () => {

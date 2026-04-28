@@ -1,6 +1,7 @@
 import express from 'express';
 import { findEmployee, findEmployeeByName } from '../services/employee.js';
 import { query } from '../config/database.js';
+import { authMiddleware, requireSelf } from '../services/auth.js';
 
 const router = express.Router();
 
@@ -24,7 +25,7 @@ function shape(employee) {
 /**
  * GET /api/employee/:id
  */
-router.get('/:id', async (req, res) => {
+router.get('/:id', authMiddleware, requireSelf('id'), async (req, res) => {
   try {
     const emp = await findEmployee({ employeeId: req.params.id });
     if (!emp) return res.status(404).json({ error: 'Employee not found' });
@@ -37,7 +38,7 @@ router.get('/:id', async (req, res) => {
 /**
  * GET /api/employee/:id/vacation
  */
-router.get('/:id/vacation', async (req, res) => {
+router.get('/:id/vacation', authMiddleware, requireSelf('id'), async (req, res) => {
   try {
     const emp = await findEmployee({ employeeId: req.params.id });
     if (!emp) return res.status(404).json({ error: 'Employee not found' });
@@ -103,7 +104,7 @@ router.post('/auth', async (req, res) => {
 /**
  * GET /api/employee/:id/birthday
  */
-router.get('/:id/birthday', async (req, res) => {
+router.get('/:id/birthday', authMiddleware, requireSelf('id'), async (req, res) => {
   try {
     const emp = await findEmployee({ employeeId: req.params.id });
     if (!emp) return res.status(404).json({ error: 'Employee not found' });
@@ -126,7 +127,7 @@ router.get('/:id/birthday', async (req, res) => {
  * GET /api/employee/search?name=...
  * Полнотекстовый поиск по ФИО — отвечает на «когда день рождения <имя коллеги>».
  */
-router.get('/search/by-name', async (req, res) => {
+router.get('/search/by-name', authMiddleware, async (req, res) => {
   try {
     const name = req.query.name;
     if (!name) return res.status(400).json({ error: 'name query is required' });

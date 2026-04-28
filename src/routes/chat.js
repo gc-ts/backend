@@ -3,8 +3,10 @@ import { generateResponse, streamResponse } from '../services/ollama.js';
 import { searchKnowledge } from '../services/knowledge.js';
 import { findEmployee } from '../services/employee.js';
 import { query } from '../config/database.js';
+import { authMiddleware } from '../services/auth.js';
 
 const router = express.Router();
+router.use(authMiddleware);
 
 const HR_FALLBACK_HINT =
   '\n\nЕсли вам нужна точная информация — напишите в отдел кадров: hr@company.ru, +7 (495) 123-45-67.';
@@ -53,7 +55,12 @@ async function persistMessage(employeeId, role, content) {
  */
 router.post('/message', async (req, res) => {
   try {
-    const { message, employeeId } = req.body;
+    const { message } = req.body;
+    // Админ может явно указать employeeId в body, обычный юзер — только себя
+    const employeeId =
+      req.user.role === 'admin' && req.body.employeeId
+        ? req.body.employeeId
+        : req.user.employeeId;
     if (!message) return res.status(400).json({ error: 'Message is required' });
 
     const [employee, history, knowledge] = await Promise.all([
@@ -91,7 +98,11 @@ router.post('/message', async (req, res) => {
  * Stream: { type: 'context', source, hits } | { type: 'token', delta } | { type: 'done' }
  */
 router.post('/stream', async (req, res) => {
-  const { message, employeeId } = req.body;
+  const { message } = req.body;
+  const employeeId =
+    req.user.role === 'admin' && req.body.employeeId
+      ? req.body.employeeId
+      : req.user.employeeId;
   if (!message) return res.status(400).json({ error: 'Message is required' });
 
   res.setHeader('Content-Type', 'text/event-stream');
@@ -152,6 +163,9 @@ router.post('/stream', async (req, res) => {
  */
 router.get('/history/:employeeId', async (req, res) => {
   try {
+    if (req.user.role !== 'admin' && String(req.user.employeeId) !== String(req.params.employeeId)) {
+      return res.status(403).json({ error: 'Forbidden: cannot access another employee history' });
+    }
     const { employeeId } = req.params;
     try {
       const result = await query(

@@ -104,7 +104,8 @@ export const authenticateEmployee = async (login, password) => {
   const token = generateToken({
     id: employee.id,
     employeeId: employee.employee_id,
-    email: employee.email
+    email: employee.email,
+    role: employee.role || 'employee'
   });
 
   delete employee.password_hash;
@@ -150,6 +151,32 @@ export const authMiddleware = async (req, res, next) => {
   }
 };
 
+/**
+ * Middleware: запрашиваемый employeeId должен совпадать с employeeId из JWT.
+ * Защищает от IDOR на ресурсах, привязанных к сотруднику.
+ */
+export const isAdmin = (user) => user?.role === 'admin';
+
+export const requireSelf = (paramName = 'id') => (req, res, next) => {
+  if (!req.user) return res.status(401).json({ error: 'Unauthenticated' });
+  if (isAdmin(req.user)) return next(); // админ имеет доступ к любому id
+  const requested = req.params?.[paramName];
+  if (requested == null) return res.status(400).json({ error: `Missing :${paramName}` });
+  if (String(req.user.employeeId) !== String(requested)) {
+    return res.status(403).json({ error: 'Forbidden: cannot access another employee' });
+  }
+  next();
+};
+
+/**
+ * Middleware: только для пользователей с role = 'admin'.
+ */
+export const requireAdmin = (req, res, next) => {
+  if (!req.user) return res.status(401).json({ error: 'Unauthenticated' });
+  if (!isAdmin(req.user)) return res.status(403).json({ error: 'Forbidden: admin only' });
+  next();
+};
+
 export default {
   hashPassword,
   comparePassword,
@@ -158,5 +185,8 @@ export default {
   registerEmployee,
   authenticateEmployee,
   getEmployeeByEmployeeId,
-  authMiddleware
+  authMiddleware,
+  requireSelf,
+  requireAdmin,
+  isAdmin
 };
