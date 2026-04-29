@@ -7,6 +7,16 @@ import * as store from './vectorStore.js';
 dotenv.config();
 
 const DOCS_DIR = process.env.RAG_DOCS_DIR || './data/docs';
+const PORTAL_URL = (process.env.WP_URL || 'https://portal-test.1221systems.ru').replace(/\/+$/, '');
+const PORTAL_LINKS = {
+  store: `${PORTAL_URL}/store/`,
+  benefits: `${PORTAL_URL}/cafeteria/`,
+  recommendations: `${PORTAL_URL}/career/recommendations/`,
+  vacancyApplications: `${PORTAL_URL}/career/vacancies/`,
+  vacancies: 'https://nn.hh.ru/search/vacancy?from=employerPage&employer_id=6067730&hhtmFrom=employer',
+  training: `${PORTAL_URL}/training/`,
+  contacts: `${PORTAL_URL}/contact/`
+};
 
 // Быстрые, статичные ответы по типовым кейсам из ТЗ — используются как fallback
 // и как seed-документы, если папка с документами пуста.
@@ -28,18 +38,38 @@ const STATIC_KNOWLEDGE = {
   },
   dms: {
     title: 'ДМС (Добровольное медицинское страхование)',
-    content: `Программы ДМС:\n- Базовая программа: амбулаторное и стационарное лечение.\n- Расширенная программа: дополнительно стоматология.\n- Подключение — через отдел кадров.\nПодробнее: https://portal.company.ru/benefits/dms\n\nОснование: Положение о социальных льготах, раздел 3`,
-    source: 'Положение о социальных льготах, раздел 3'
+    content: `Программы ДМС и другие льготы доступны в разделе «Кафетерий льгот» корпоративного портала.\nСсылка: ${PORTAL_LINKS.benefits}\n\nКратко:\n- Откройте кафетерий льгот на портале.\n- Выберите доступную программу ДМС или другую льготу.\n- Если условия программы непонятны, обратитесь в HR через раздел контактов: ${PORTAL_LINKS.contacts}\n\nОснование: Корпоративный портал, Кафетерий льгот`,
+    source: 'Корпоративный портал, Кафетерий льгот'
   },
   merch: {
     title: 'Магазин мерча',
-    content: `Заказ корпоративного мерча:\n- Магазин: https://merch.company.ru\n- Доставка в офис бесплатная.\n- Оплата — внутренние бонусы или банковская карта.\n\nОснование: Положение о корпоративной культуре`,
-    source: 'Положение о корпоративной культуре'
+    content: `Заказ корпоративного мерча оформляется в магазине на корпоративном портале.\nСсылка: ${PORTAL_LINKS.store}\n\nКратко:\n- Перейдите в магазин мерча.\n- Выберите нужный товар.\n- Оформите заказ на портале; если товар недоступен или есть вопрос по оплате/доставке, обратитесь в HR через контакты: ${PORTAL_LINKS.contacts}\n\nОснование: Корпоративный портал, Магазин мерча`,
+    source: 'Корпоративный портал, Магазин мерча'
   },
   referral: {
     title: 'Реферальная программа',
-    content: `Рекомендация кандидатов:\n- Форма: https://portal.company.ru/referral\n- Бонус за успешный найм: 50 000 ₽.\n- Контакт рекрутера: hr@company.ru\n\nОснование: Положение о реферальной программе`,
-    source: 'Положение о реферальной программе'
+    content: `Рекомендовать друга на вакансию можно через раздел рекомендаций на корпоративном портале.\nСсылка: ${PORTAL_LINKS.recommendations}\n\nКратко:\n- Откройте форму рекомендаций.\n- Укажите данные кандидата и вакансию, если она известна.\n- Открытые вакансии компании можно посмотреть здесь: ${PORTAL_LINKS.vacancies}\n- По дополнительным вопросам обратитесь в HR через контакты: ${PORTAL_LINKS.contacts}\n\nОснование: Корпоративный портал, Рекомендации`,
+    source: 'Корпоративный портал, Рекомендации'
+  },
+  vacancies: {
+    title: 'Вакансии и заявки на вакансии',
+    content: `Открытые вакансии и заявки доступны по ссылкам:\n- Вакансии на hh.ru: ${PORTAL_LINKS.vacancies}\n- Заявки на вакансии на корпоративном портале: ${PORTAL_LINKS.vacancyApplications}\n\nКратко:\n- Для просмотра актуальных вакансий откройте страницу работодателя на hh.ru.\n- Для внутренних заявок используйте раздел «Вакансии» на корпоративном портале.\n- Если нужна помощь с откликом или рекомендацией кандидата, используйте форму рекомендаций: ${PORTAL_LINKS.recommendations}\n\nОснование: Корпоративный портал, Вакансии`,
+    source: 'Корпоративный портал, Вакансии'
+  },
+  training: {
+    title: 'Обучение и курсы',
+    content: `Обучение и курсы доступны в разделе «Обучение» корпоративного портала.\nСсылка: ${PORTAL_LINKS.training}\n\nКратко:\n- Откройте раздел обучения.\n- Выберите доступный курс или учебный материал.\n- Если нужен доступ к курсу, обратитесь к ответственному за обучение или в HR через контакты: ${PORTAL_LINKS.contacts}\n\nОснование: Корпоративный портал, Обучение`,
+    source: 'Корпоративный портал, Обучение'
+  },
+  contacts: {
+    title: 'Контакты',
+    content: `Контакты компании и ответственных сотрудников доступны на корпоративном портале.\nСсылка: ${PORTAL_LINKS.contacts}\n\nКратко:\n- Используйте раздел контактов для связи с HR и другими ответственными.\n- Если вопрос связан с вакансией, рекомендацией, льготами, мерчем или обучением, начните с профильного раздела портала и при необходимости обратитесь через контакты.\n\nОснование: Корпоративный портал, Контакты`,
+    source: 'Корпоративный портал, Контакты'
+  },
+  portal: {
+    title: 'Корпоративный портал',
+    content: `Основные разделы корпоративного портала:\n- Магазин мерча: ${PORTAL_LINKS.store}\n- Кафетерий льгот и ДМС: ${PORTAL_LINKS.benefits}\n- Рекомендовать друга: ${PORTAL_LINKS.recommendations}\n- Заявки на вакансии: ${PORTAL_LINKS.vacancyApplications}\n- Открытые вакансии на hh.ru: ${PORTAL_LINKS.vacancies}\n- Обучение и курсы: ${PORTAL_LINKS.training}\n- Контакты: ${PORTAL_LINKS.contacts}\n\nОснование: Корпоративный портал`,
+    source: 'Корпоративный портал'
   }
 };
 
@@ -48,8 +78,12 @@ const KEYWORD_MAP = [
   { keys: ['зарплат', 'аванс', 'оклад', 'расчетный лист', 'расчётный лист'], entry: STATIC_KNOWLEDGE.salary },
   { keys: ['больнич', 'sick'], entry: STATIC_KNOWLEDGE.sickLeave },
   { keys: ['дмс', 'страхован', 'медицин', 'стоматолог'], entry: STATIC_KNOWLEDGE.dms },
-  { keys: ['мерч', 'merch', 'мерчандайз'], entry: STATIC_KNOWLEDGE.merch },
-  { keys: ['рекоменд', 'реферал', 'referral', 'друга на вакан'], entry: STATIC_KNOWLEDGE.referral }
+  { keys: ['мерч', 'merch', 'мерчандайз', 'магазин'], entry: STATIC_KNOWLEDGE.merch },
+  { keys: ['рекоменд', 'реферал', 'referral', 'друга на вакан', 'порекомендовать друга'], entry: STATIC_KNOWLEDGE.referral },
+  { keys: ['ваканс', 'hh.ru', 'hh ', 'отклик', 'заявк'], entry: STATIC_KNOWLEDGE.vacancies },
+  { keys: ['обучен', 'курс', 'тренинг', 'training'], entry: STATIC_KNOWLEDGE.training },
+  { keys: ['контакт', 'адрес', 'телефон', 'связаться'], entry: STATIC_KNOWLEDGE.contacts },
+  { keys: ['корпоративный портал', 'корп портал', 'портал', 'раздел портала'], entry: STATIC_KNOWLEDGE.portal }
 ];
 
 export function searchKnowledgeKeyword(query) {
@@ -68,6 +102,11 @@ export function getAllKnowledge() {
  * Гибридный поиск: вектор + (если ничего не найдено) быстрый keyword-fallback.
  */
 export async function searchKnowledge(query) {
+  const kw = searchKnowledgeKeyword(query);
+  if (kw?.source?.startsWith('Корпоративный портал')) {
+    return { title: kw.title, content: kw.content, source: kw.source, hits: [] };
+  }
+
   try {
     const hits = await store.search(query);
     if (hits.length) {
@@ -82,7 +121,6 @@ export async function searchKnowledge(query) {
     console.warn('Vector search failed, falling back to keyword:', e.message);
   }
 
-  const kw = searchKnowledgeKeyword(query);
   if (kw) return { title: kw.title, content: kw.content, source: kw.source, hits: [] };
 
   return null;

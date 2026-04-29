@@ -48,6 +48,38 @@ async function persistMessage(employeeId, role, content) {
   }
 }
 
+function usesEmployeeData(message) {
+  const q = String(message || '').toLowerCase();
+  return [
+    'мой',
+    'моя',
+    'мои',
+    'мне',
+    'у меня',
+    'зарплат',
+    'оклад',
+    'отпуск',
+    'дата рождения',
+    'день рождения',
+    'табель',
+    'баланс',
+    '1221coin',
+    'бонус',
+    'telegram',
+    'телеграм',
+    'код 1с',
+    'медосмотр',
+    'санминимум'
+  ].some((key) => q.includes(key));
+}
+
+function buildSource({ message, employee, knowledge }) {
+  return [
+    employee && usesEmployeeData(message) ? 'ДАННЫЕ СОТРУДНИКА' : null,
+    knowledge?.source || null
+  ].filter(Boolean).join('; ') || null;
+}
+
 /**
  * POST /api/chat/message
  * Body: { message, employeeId? }
@@ -70,9 +102,7 @@ router.post('/message', async (req, res) => {
     ]);
 
     const context = knowledge?.content || '';
-    const source = [employee ? 'ДАННЫЕ СОТРУДНИКА' : null, knowledge?.source || null]
-      .filter(Boolean)
-      .join('; ') || null;
+    const source = buildSource({ message, employee, knowledge });
     const hits = knowledge?.hits || [];
 
     let answer = await generateResponse(message, context, employee, history);
@@ -124,9 +154,7 @@ router.post('/stream', async (req, res) => {
 
     send({
       type: 'context',
-      source: [employee ? 'ДАННЫЕ СОТРУДНИКА' : null, knowledge?.source || null]
-        .filter(Boolean)
-        .join('; ') || null,
+      source: buildSource({ message, employee, knowledge }),
       hits: (knowledge?.hits || []).map((h) => ({
         score: h.score,
         doc: h.docTitle,
